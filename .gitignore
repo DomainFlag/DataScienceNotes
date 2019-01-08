@@ -4,3 +4,6 @@
 songs/
 dataset/
 Speech Recognition/
+
+**/models/
+**/data/
