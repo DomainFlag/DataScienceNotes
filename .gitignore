@@ -1,9 +1,5 @@
 .git/
 .ipynb_checkpoints
 
-songs/
-dataset/
-Speech Recognition/
-
-**/models/
 **/data/
+**/models/
