@@ -2,24 +2,31 @@ import pandas as pd
 import numpy as np
 
 from pandas.api.types import is_string_dtype, is_numeric_dtype, is_categorical_dtype
+from pandas.core.dtypes.common import is_datetime_or_timedelta_dtype
 
 
-def split_date(data_frame, col_name):
+def split_date(data_frame, col_name, alias):
     ''' helper function to split the date into corresponding categoricals '''
     
-    # split date into corresponding columns
-    split_date.props = ["year", "month", "day"]
+    # split date into corresponding features
+    split_date.props = ["year", "month", "day", "dayofweek"]
     
     # extract date column
     col_date = data_frame[col_name]
     
+    assert(is_datetime_or_timedelta_dtype(col_date.values))
+    
     # extracting date properties and storing into individual columns
-    for d in split_date.props:
-        if(hasattr(col_date.dt, d)):
-            data_frame[f"sale_{d}"] = getattr(col_date.dt, d)
+    for feature in split_date.props:
+        
+        # check if it contains a datetime property
+        if(hasattr(col_date.dt, feature)):
+            
+            # create a feature as [alias]_[feature_name]
+            data_frame[f"{alias}_{feature}"] = getattr(col_date.dt, feature)
             
     # extracting timestamp
-    data_frame["sale_timestamp"] = col_date.astype(np.int64) // (10 ** 9)
+    data_frame[f"{alias}_timestamp"] = col_date.astype(np.int64) // (10 ** 9)
     
     # removing the raw column
     data_frame.drop(columns = [col_name], inplace = True)
@@ -75,7 +82,7 @@ def trans_numerical(data_frame, target, suffle_data_frame = True):
             # change to numerical data
             data_frame_c[label] = data_frame_c[label].astype("category").cat.codes + 1
     
-    return [ data_frame_c.drop(columns = [ target ]), data_frame_c[target].values ]
+    return [ data_frame_c.drop(columns = [ target ]), pd.Series(data_frame_c[target].values) ]
 
 
 def split_dataset(data, threshold, columns = None):
