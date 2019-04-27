@@ -51,7 +51,8 @@ def trans_categorical(data_frame, labels = []):
             
 def trans_numerical(data_frame, target, suffle_data_frame = True):
     ''' helper function for retrieving numerical features and targets, 
-    null values are transformed into the median value of the column. '''
+        null values are transformed into the median value of the column. 
+    '''
 
     # copy the data frame
     data_frame_c = data_frame.copy()
