@@ -49,7 +49,7 @@ def trans_categorical(data_frame, labels = []):
             data_frame[label] = data_frame[label].astype("category")
             
             
-def trans_numerical(data_frame, target, suffle_data_frame = True):
+def transform_to_numeric(data_frame, suffle_data_frame = True):
     ''' helper function for retrieving numerical features and targets, 
         null values are transformed into the median value of the column. 
     '''
@@ -83,7 +83,11 @@ def trans_numerical(data_frame, target, suffle_data_frame = True):
             # change to numerical data
             data_frame_c[label] = data_frame_c[label].astype("category").cat.codes + 1
     
-    return [ data_frame_c.drop(columns = [ target ]), pd.Series(data_frame_c[target].values) ]
+    return data_frame_c
+
+def split_target(data, target):
+    
+    return [ data.drop(columns = [ target ]), pd.Series(data[target].values) ]
 
 
 def split_dataset(data, threshold, columns = None):
