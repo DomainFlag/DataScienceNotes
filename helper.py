@@ -128,3 +128,27 @@ def split_data(features, targets, threshold, columns = None, subset = None):
     train_targets, valid_targets = split_dataset(targets, threshold, columns = None)
     
     return (train_features, train_targets), (valid_features, valid_targets)
+
+class Normalization():
+    ''' helper class for data normalization and scaling '''
+    
+    def __init__(self):
+        
+        self.std = None
+        self.mean = None
+    
+    def normalize(self, data):
+        
+        # compute disparity
+        self.std = np.std(data)
+
+        # compute mean
+        self.mean = np.mean(data)
+        
+        return (data - self.mean) / self.std
+
+    def scale(self, data):
+        
+        assert(self.std is not None and self.mean is not None)
+        
+        return data * self.std + self.mean
