@@ -90,7 +90,7 @@ def split_target(data, target):
     return [ data.drop(columns = [ target ]), pd.Series(data[target].values) ]
 
 
-def split_dataset(data, threshold, columns = None):
+def split_dataset(data, threshold, columns = None, batch_trim = 1):
     ''' helper function to split data into training and validation set '''
     
     # provisional data copied
@@ -100,10 +100,13 @@ def split_dataset(data, threshold, columns = None):
         
         # filter columns
         data_prov = data_prov[columns]
+        
+    # upper treshold with respect to batch_trim
+    upper_threshold = len(data_prov) - len(data_prov) % batch_trim
 
-    return data_prov[threshold:], data_prov[:threshold]
+    return data_prov[threshold:upper_threshold], data_prov[:threshold]
 
-def split_data(features, targets, threshold, columns = None, subset = None):
+def split_data(data, threshold = 1.0, columns = None, subset = None, batch_trim = 1):
     ''' helper function to split data into training and validation set '''
     
     assert(threshold >= 0 and threshold <= 1.0)
@@ -111,23 +114,32 @@ def split_data(features, targets, threshold, columns = None, subset = None):
     if(subset is None):
         
         # subset is our full set
-        subset = targets.size
+        subset = len(data)
         
     else:
         
         # smaller set of data
-        features, targets = features[:subset], targets[:subset]
+        data = data[:subset]
         
-    # update our threeshold for current subset
+    # update our threshold for current subset
     threshold = int(threshold * subset)
     
-    # splitting features
-    train_features, valid_features = split_dataset(features, threshold, columns = columns)
+    # trim the threshold with respect to batch_trim
+    threshold = threshold - threshold % batch_trim
     
-    # splitting targets
-    train_targets, valid_targets = split_dataset(targets, threshold, columns = None)
+    # splitting data
+    train_data, valid_data = split_dataset(data, threshold, columns = columns, batch_trim = batch_trim)
     
-    return (train_features, train_targets), (valid_features, valid_targets)
+    return (train_data, valid_data)
+
+
+def split_features(* data, columns = None):
+    ''' helper function to split data into training and validation set '''
+    
+    assert(columns is not None)
+    
+    return [ [ data_set.drop(columns, axis = 1), * [ data_set[column] for column in columns ] ] for data_set in data ]
+    
 
 class Normalization():
     ''' helper class for data normalization and scaling '''
