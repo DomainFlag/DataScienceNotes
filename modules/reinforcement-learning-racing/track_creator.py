@@ -4,7 +4,7 @@ import os
 import numpy as np
 import scipy.interpolate as interpolate
 
-from pygame import Color
+from modules import Sprite
 
 WHITE = (255, 255, 255)
 RED = (255, 0, 0)
@@ -15,7 +15,11 @@ TRANSPARENT = (0, 0, 0, 0)
 ROAD_TRACK = (50, 50, 50)
 ROAD_HINT = (143, 152, 86)
 
-SCALE = 20.0
+FPS_CAP = 60.0
+WIDTH = 75
+
+TITLE = "RL racer"
+SIZE = [700, 700]
 
 
 def get_angle(p0, p1, p2):
@@ -100,26 +104,27 @@ def pivot_map_generate(size, width, height, threshold_dist = 0.75, threshold_ang
 
 def pivot_adjacent(pivots, index):
     if index == 0:
-        return [pivots[-1]] + pivots[index:index + 2]
+        return np.concatenate(([pivots[-1]], pivots[index:index + 2])), [len(pivots) - 1, index, index + 1]
     elif index == len(pivots) - 1:
-        return pivots[index - 1:index + 1] + [pivots[0]]
+        return np.concatenate((pivots[index - 1:index + 1], [pivots[0]])), [index - 1, index, 0]
     else:
-        return pivots[index - 1:index + 2]
+        return np.array(pivots[index - 1:index + 2]), list(range(index - 1, index + 2))
 
 
-def shape_coordinates(pivots, scaling = SCALE):
+def shape_coordinates(pivots, scaling = WIDTH / 2.0):
     if len(pivots) != 3:
         raise Exception("Requires three pivots")
 
-    ab, bc, ac = calc_distance(pivots[0], pivots[1]), calc_distance(pivots[1], pivots[2]), calc_distance(pivots[0], pivots[2])
+    ab, bc, ac = calc_distance(*pivots[0:2]), calc_distance(*pivots[1:]), calc_distance(pivots[0], pivots[2])
     width, height = (pivots[2] - pivots[1])
 
     ac1 = (bc ** 2 + ac ** 2 - ab ** 2) / (2 * ac)
-    origin, alpha = np.arctan2(height, width), np.arcsin(ac1 / bc)
+    h = np.sqrt(bc ** 2 - ac1 ** 2)
+    origin, alpha = np.arctan2(-height, width), np.arctan2(ac1, h)
     angle1, angle2 = origin - alpha, origin + (np.pi - alpha)
 
-    x0 = np.array(np.cos(angle1), np.sin(angle1)) * scaling + pivots[1]
-    x1 = np.array(np.cos(angle2), np.sin(angle2)) * scaling + pivots[1]
+    x0 = np.array([np.cos(angle1), np.sin(angle1)]) * scaling + pivots[1]
+    x1 = np.array([np.cos(angle2), np.sin(angle2)]) * scaling + pivots[1]
 
     return [pivots[1], pivots[1], x0, x1], origin, bc
 
@@ -136,7 +141,7 @@ def interpolated_map_generate(pivots, noise = None, knots = 5, order = False):
 
     tck, u = interpolate.splprep([xs, ys], w = weights, s = 512.0, t = knots, per = True)
 
-    # Evaluate the spline fits for 2000 evenly spaced distance values
+    # Evaluate the spline fits for 15000 evenly spaced distance values
     xi, yi = interpolate.splev(np.linspace(0, 1, 15000), tck)
 
     return xi, yi
@@ -150,7 +155,7 @@ def track_line_render(step, offset):
             pos1 = np.array([x1, y1]) + track_offset
             pos2 = np.array([xi[ind], yi[ind]]) + track_offset
 
-            pygame.draw.line(screen, ROAD_TRACK, pos1.astype(int), pos2.astype(int), 45)
+            pygame.draw.line(screen, ROAD_TRACK, pos1.astype(int), pos2.astype(int), WIDTH)
 
             if index % step > offset:
                 pygame.draw.line(screen, ROAD_HINT, pos1.astype(int), pos2.astype(int), 3)
@@ -162,7 +167,7 @@ def track_texture_render(texture):
     def renderer(screen, track_offset, xi, yi):
         data = np.array([xi, yi]).T
         for index, pivot in enumerate(data):
-            adjacent_pivots = pivot_adjacent(data.tolist(), index)
+            adjacent_pivots, _ = pivot_adjacent(data.tolist(), index)
             shape, rotation, distance = shape_coordinates(np.array(adjacent_pivots))
 
             surf = texture.subsurface((0, 0, 35, 2.0))
@@ -173,23 +178,49 @@ def track_texture_render(texture):
 
 
 def create_text_renderer(screen):
+    # Load font
     font = pygame.font.SysFont('Comic Sans MS', 24)
 
     def text_render(text, position):
         surface = font.render(text, False, (0, 0, 0))
+
+        # Render to current surface
         screen.blit(surface, position)
 
     return text_render
 
 
-def metadata_map_generate(pivots, index = 0, offset = 100):
-    if pivots is None or len(pivots) == 0:
+def render_track(pivots, points, xi, yi, track_offset, text_renderer, track_renderer, hints = False):
+    # Track surface
+    track = pygame.Surface(SIZE)
+
+    # Render hints for track construction
+    if hints:
+        for point in points:
+            pygame.draw.circle(track, BLACK, point + track_offset, 5)
+
+        for index, pivot in enumerate(pivots):
+            text_renderer(str(index), pivot + track_offset)
+
+            pygame.draw.circle(track, RED, pivot + track_offset, 5)
+
+    # Render track
+    track_renderer(track, track_offset, xi, yi)
+
+    # Optimize drawing
+    track.convert()
+
+    return track
+
+
+def metadata_map_generate(points, index = 0, offset = 100):
+    if points is None or len(points) == 0:
         raise Exception("Illegal parameters")
 
-    if index < 0 or index >= len(pivots):
+    if index < 0 or index >= len(points):
         raise Exception("Illegal index position")
 
-    curr_pos, next_pos = (pivots[index], pivots[index + offset])
+    curr_pos, next_pos = (points[index], points[index + offset])
     next_pos = np.array(next_pos) - np.array(curr_pos)
     next_pos[-1] *= -1
 
@@ -197,38 +228,66 @@ def metadata_map_generate(pivots, index = 0, offset = 100):
     if angle < 0:
         angle = 2 * np.pi - np.abs(angle)
 
-    return pivots[index], angle
+    return curr_pos, angle
 
 
-def track_creator(hints = False):
+def update_index(sprite, points, index):
+    while True:
+        pivots, indices = pivot_adjacent(points, index)
+        distances = [ calc_distance(sprite.position, pivot) for pivot in pivots ]
+        max_index = np.argmin(distances)
+
+        if max_index == 0:
+            index -= 1
+            if index < 0:
+                index = len(points) - 1
+        elif max_index == 2:
+            index += 1
+            if index >= len(points):
+                index = 0
+        else:
+            break
+
+    return indices[max_index]
+
+
+def update_sprite_width(sprite, points, index):
+    pivots, _ = pivot_adjacent(points, index)
+    shape, rotation, distance = shape_coordinates(pivots)
+
+    dst1 = calc_distance(sprite.position, shape[2])
+    dst2 = calc_distance(sprite.position, shape[3])
+
+    return shape[2:], np.minimum(dst1, dst2)
+
+
+def track_creator(hint = True):
     # Set full screen centered
     os.environ['SDL_VIDEO_CENTERED'] = '1'
     pygame.init()
+    pygame.display.set_caption(TITLE)
 
     # Set the height and width of the screen
-    size = [700, 700]
-    screen = pygame.display.set_mode(size)
+    screen = pygame.display.set_mode(SIZE)
+
+    # Loop until the user clicks the close button.
+    done = False
 
     # Create a text renderer helper function
     text_renderer = create_text_renderer(screen)
 
-    pygame.display.set_caption("RL racer")
-
-    # Loop until the user clicks the close button.
-    done = False
-    clock = pygame.time.Clock()
-
     # Generate pivots
-    track_offset = (np.mean(size) * 0.1).astype(int)
-    track_size = np.array(size) - track_offset * 2.0
+    track_offset = (np.mean(SIZE) * 0.1).astype(int)
+    track_size = np.array(SIZE) - track_offset * 2.0
 
     points, pivots = pivot_map_generate(32, *track_size)
     noise = np.random.random(len(pivots) + 1) * 50.03
 
-    # Create the track and renderer
+    # Create the track and renderer, render to static surface
     xi, yi = interpolated_map_generate(np.array(pivots), noise = noise)
     track_data = np.array([xi, yi]).T
     track_renderer = track_line_render(156, 48)
+    track = render_track(pivots, points, xi, yi, track_offset, text_renderer, track_renderer)
 
     # Road texture
     road_tex = pygame.image.load("./assets/tunnel_road.jpg")
@@ -243,13 +302,29 @@ def track_creator(hints = False):
     car_size_offset = np.array(car_tex.get_rect().size) / 2
 
     # Generate track meta-data
-    start_pos, start_rot = metadata_map_generate(track_data)
+    sprite_index = 0
+    start_pos, start_rot = metadata_map_generate(track_data, index = sprite_index)
+
+    # Create a sprite given meta-data
+    sprite = Sprite(np.array(start_pos), start_rot)
+
+    # Set up timer for smooth rendering
+    clock = pygame.time.Clock()
 
     while not done:
 
-        # This limits the while loop to a max of 10 times per second.
-        # Leave this out and we will use all CPU we can.
-        clock.tick(10)
+        # Continuous key press
+        keys = pygame.key.get_pressed()
+
+        if keys[pygame.K_UP]:
+            sprite.movement(Sprite.acceleration)
+        elif keys[pygame.K_DOWN]:
+            sprite.movement(-Sprite.acceleration)
+
+        if keys[pygame.K_LEFT]:
+            sprite.rotation += sprite.steering
+        elif keys[pygame.K_RIGHT]:
+            sprite.rotation -= sprite.steering
 
         # User did something
         for event in pygame.event.get():
@@ -258,30 +333,37 @@ def track_creator(hints = False):
                 done = True
 
             # Escape key is pressed
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-                done = True
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    done = True
 
         # Clear the screen and set the screen background
         screen.fill(WHITE)
 
-        # Render hints for track construction
-        if hints:
-            for point in points:
-                pygame.draw.circle(screen, BLACK, point + track_offset, 5)
-
-            for index, pivot in enumerate(pivots):
-                text_renderer(str(index), pivot + track_offset)
-
-                pygame.draw.circle(screen, RED, pivot + track_offset, 5)
-
         # Render track
-        track_renderer(screen, track_offset, xi, yi)
+        screen.blit(track, (0, 0))
 
         # Render objects
-        surf = pygame.transform.rotate(car_tex, (np.pi / 2.0) / np.pi * 180 + start_rot / np.pi * 180)
-        screen.blit(surf, start_pos + track_offset - car_size_offset)
+        surf = pygame.transform.rotate(car_tex, (np.pi / 2.0) / np.pi * 180 + sprite.rotation / np.pi * 180)
+        screen.blit(surf, sprite.position + track_offset - car_size_offset)
 
+        # Activate any activable units
+        sprite.act()
+        sprite_index = update_index(sprite, track_data, sprite_index)
+        pts, width = update_sprite_width(sprite, track_data, sprite_index)
+        if hint:
+            pygame.draw.circle(screen, GREEN, (pts[0] + track_offset).astype(int), 1)
+            pygame.draw.circle(screen, GREEN, (pts[1] + track_offset).astype(int), 1)
+
+            pygame.draw.circle(screen, RED, (track_data[sprite_index] + track_offset).astype(int), 2)
+
+        # Update the screen
         pygame.display.flip()
+
+        # Handle constant FPS cap
+        pygame.display.set_caption("{0}: {1:.2f}".format(TITLE, clock.get_fps()))
+
+        clock.tick(FPS_CAP)
 
     # Be IDLE friendly
     pygame.quit()
