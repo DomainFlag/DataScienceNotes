@@ -1,4 +1,5 @@
-from track_creator import track_creator
+from racing_game import racing_game
+
 
 if __name__ == '__main__':
-    track_creator()
+    racing_game()
