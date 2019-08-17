@@ -11,6 +11,8 @@ class Sprite:
     MAX_VELOCITY: float = 3.45
     MIN_VELOCITY: float = 1.92
 
+    ACTION_SPACE_COUNT = 4
+
     acceleration: float = 0.025
     steering: float = 0.02
     attenuation: float = 0.25

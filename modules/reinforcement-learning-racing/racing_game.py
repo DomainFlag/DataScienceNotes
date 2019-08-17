@@ -10,7 +10,6 @@ TITLE = "RL racer"
 SIZE = [700, 700]
 
 FPS_CAP = 60.0
-
 CLEAR_SCREEN = (255, 255, 255)
 
 
@@ -31,8 +30,29 @@ def create_snapshot(filename: str, surface, format = "PNG"):
     data = pygame.surfarray.pixels3d(surface)
     image = Image.fromarray(np.rollaxis(data, 0, 1)[::-1, :, :], "RGB")
     image = image.rotate(270)
-    image.save("snapshots/" + filename, format)
+    image.save("snapshots/" + filename, format = format)
     del data
+
+
+def smoothness(x):
+    return np.sqrt(np.log10(x))
+
+
+def rewarder(prev_params, curr_params):
+    reward = 1.0 if curr_params["alive"] else -1.0
+
+    reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"] * (np.e - 1))
+    if curr_params["acc"] < prev_params["acc"]:
+        reward_acc = np.sqrt(reward_acc)
+
+    if curr_params["alive"]:
+        reward_pos = 1.0 - smoothness(curr_params["width"] / curr_params["width_max"] * (np.e - 1))
+    else:
+        reward_pos = 0
+
+    reward += reward_acc + reward_pos
+
+    return reward
 
 
 def racing_game():
