@@ -3,9 +3,9 @@ import random
 import numpy as np
 import scipy.interpolate as interpolate
 
-from math import cos, sin
 from pygame import gfxdraw
 from modules import Sprite
+from typing import Any
 
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
@@ -32,6 +32,8 @@ class Track:
     }
 
     def initialize(self, size, text_renderer):
+        self.size = size
+
         # Generate pivots
         self.track_offset = (np.mean(size) * 0.1).astype(int)
         track_size = np.array(size) - self.track_offset * 2.0
@@ -80,7 +82,7 @@ class Track:
 
         dsts = [ calc_distance(position, pt) for pt in shape ]
 
-        return shape, np.min(dsts)
+        return shape, np.min(dsts), rotation
 
     def get_track_position(self, index):
         return self.track_data[index].copy()
@@ -110,6 +112,40 @@ class Track:
         self.sprite.position, self.sprite.rotation = start_pos, start_rot
         self.index, self.lap = 0, 0
 
+    def is_alive(self, state = None, precision = True):
+        if precision and state is not None:
+            position, size, rot = self.sprite.position.copy(), self.sprite.SPRITE_SIZE, self.sprite.rotation
+            position += self.track_offset - self.sprite.car_size_offset
+
+            for x in range(0, size[0]):
+                for y in range(0, size[1]):
+                    coord = np.array([x, y]) - size / 2
+                    coord_rot = np.arctan2(coord[1], coord[0]) - rot
+                    coord = np.array([np.cos(coord_rot), np.sin(coord_rot)]) * np.sqrt(np.dot(coord, coord))
+                    coord += position + size / 2
+
+                    if state.getpixel((int(coord[0]), int(coord[1]))) == BLACK:
+                        return False
+
+            return True
+        else:
+            pt1, pt2 = (self.pts[0], self.pts[1]) if self.pts[0][0] < self.pts[1][0] else (self.pts[1], self.pts[0])
+            norm_pt = pt2 - pt1
+            norm_pt = norm_pt / np.linalg.norm(norm_pt)
+
+            angle = np.arctan2(norm_pt[1], norm_pt[0])
+
+            norm_target_pt = self.sprite.position - pt1
+            scale = np.linalg.norm(norm_target_pt)
+            norm_target_pt /= scale
+
+            angle_target = np.arctan2(norm_target_pt[1], norm_target_pt[0]) - angle
+            transl_target_pt = np.array([np.cos(angle_target), np.sin(angle_target)]) * scale + pt1
+
+            x0, x1, x2 = pt1[0], transl_target_pt[0], pt1[0] + calc_distance(self.pts[0], self.pts[1])
+
+            return x0 <= x1 <= x2
+
     def act(self, scaling):
         self.sprite.act(scaling)
 
@@ -118,7 +154,7 @@ class Track:
             self.lap += 1
 
         self.index = curr_index
-        self.pts, self.width = self.get_sprite_boundaries(self.sprite.position, self.index)
+        self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
 
     def render(self, screen, hint = True):
         # Render track

@@ -10,6 +10,7 @@ TITLE = "RL racer"
 SIZE = [700, 700]
 
 FPS_CAP = 60.0
+TRANSPARENT = (0, 0, 0, 0)
 CLEAR_SCREEN = (255, 255, 255)
 
 
@@ -75,6 +76,7 @@ def racing_game(agent_active = False):
 
     # Set the icon
     icon = pygame.image.load("./assets/icon.png")
+    icon.set_colorkey(TRANSPARENT)
     pygame.display.set_icon(icon)
 
     # Loop until the user clicks the close button.
@@ -146,6 +148,10 @@ def racing_game(agent_active = False):
 
         # Update the screen
         pygame.display.flip()
+
+        if not track.is_alive(state = create_snapshot(screen)):
+            # TODO(3) update the parameters
+            pass
 
         if not agent_active:
             # Compute rendering time

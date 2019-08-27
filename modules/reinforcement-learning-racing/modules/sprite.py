@@ -7,6 +7,8 @@ RED = (255, 0, 0)
 
 class Sprite:
 
+    SPRITE_SIZE: np.ndarray = np.array([25, 25])
+
     MAX_VELOCITY: float = 3.45
     MIN_VELOCITY: float = -1.92
 
@@ -34,7 +36,7 @@ class Sprite:
     def initialize(self):
         # Car texture
         self.car_tex = pygame.image.load("./assets/car.png")
-        self.car_tex = pygame.transform.scale(self.car_tex, (25, 25))
+        self.car_tex = pygame.transform.scale(self.car_tex, Sprite.SPRITE_SIZE)
         self.car_tex.set_colorkey(TRANSPARENT)
         self.car_size = np.array(self.car_tex.get_rect().size)
         self.car_size_offset = self.car_size / 2
