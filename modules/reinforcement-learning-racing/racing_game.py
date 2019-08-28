@@ -1,6 +1,7 @@
 import pygame
 import numpy as np
 import os
+import torch
 
 from PIL import Image
 from typing import Optional
@@ -27,10 +28,22 @@ def create_text_renderer(screen):
     return text_render
 
 
-def create_snapshot(surface, filename: str = None, format = "PNG", save = False):
+def create_snapshot(surface, filename: str = None, format = "PNG", save = False, raw = False, tensor = False):
+    # Get image data
     data = pygame.surfarray.pixels3d(surface)
+
+    # Preprocess the image
     image = Image.fromarray(np.rollaxis(data, 0, 1)[::-1, :, :], "RGB")
     image = image.rotate(270)
+
+    if raw:
+        raw_image = np.asarray(image)
+        if tensor:
+            raw_image_tensor = torch.FloatTensor(raw_image).transpose(1, 2).transpose(0, 1)
+
+            return raw_image_tensor
+
+        return raw_image
 
     if save:
         image.save("snapshots/" + filename, format = format)
@@ -63,7 +76,7 @@ def rewarder(prev_params: Optional[dict], curr_params: dict):
     return reward
 
 
-def racing_game(agent_active = False):
+def racing_game(agent_active = True, episode_count = 25):
 
     # Set full screen centered
     os.environ['SDL_VIDEO_CENTERED'] = '1'
@@ -89,17 +102,22 @@ def racing_game(agent_active = False):
     track = Track()
     track.initialize(SIZE, text_renderer)
 
+    attenuation = 1.0
     if not agent_active:
         # Set up timer for smooth rendering and synchronization
         clock = pygame.time.Clock()
-        prev_time, attenuation = pygame.time.get_ticks(), 1.0
+        prev_time = pygame.time.get_ticks()
     else:
         # Set up the agent
-        agent = Agent(SIZE[0], Sprite.MOTION_SPACE_COUNT + Sprite.STEERING_SPACE_COUNT, rewarder, 15000)
+        agent = Agent(np.array(SIZE), np.array([Sprite.MOTION_SPACE_COUNT, Sprite.STEERING_SPACE_COUNT]), rewarder)
 
     # States
     prev_state, curr_state = None, None
     prev_params, curr_params = None, None
+
+    actions = None
+
+    episode_counter = 0
 
     while not done:
 
@@ -116,7 +134,7 @@ def racing_game(agent_active = False):
                 track.sprite.rotation += track.sprite.steering * attenuation
             elif keys[pygame.K_RIGHT]:
                 track.sprite.rotation -= track.sprite.steering * attenuation
-        else:
+        elif prev_state is not None:
             # Generate actions
             actions = agent.choose_actions(prev_state)
 
@@ -141,17 +159,13 @@ def racing_game(agent_active = False):
         screen.fill(CLEAR_SCREEN)
 
         # Environment act
-        track.act(attenuation)
+        lap_finished = track.act(attenuation)
 
         # Render environment
         track.render(screen)
 
         # Update the screen
         pygame.display.flip()
-
-        if not track.is_alive(state = create_snapshot(screen)):
-            # TODO(3) update the parameters
-            pass
 
         if not agent_active:
             # Compute rendering time
@@ -163,10 +177,28 @@ def racing_game(agent_active = False):
 
             clock.tick(FPS_CAP)
         else:
-            curr_state, curr_params = create_snapshot(surface), track.get_params()
+            curr_state, curr_params = create_snapshot(surface, raw = True, tensor = True), track.get_params()
 
+            # Create a fresh transition
             transition = Transition(prev_state, actions, curr_state, rewarder(prev_params, curr_params))
-            agent.memory.optimize_model(transition)
+
+            # Update the memory state
+            agent.memory.push(transition)
+
+            # Optimize model
+            agent.optimize_model()
+
+            if lap_finished:
+                episode_counter += 1
+                if episode_counter == episode_count:
+                    done = True
+                else:
+                    # Initialize the environment and state
+                    track.reset_track()
+
+            if not curr_params["alive"]:
+                # Initialize the environment and state
+                track.reset_track()
 
             prev_state, curr_state = curr_state, None
             prev_params, curr_params = curr_params, None

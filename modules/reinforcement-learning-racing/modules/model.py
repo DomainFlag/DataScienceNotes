@@ -6,15 +6,15 @@ import torch.nn.functional as fc
 
 from torch.optim.rmsprop import RMSprop
 from torch.tensor import Tensor
-from typing import List, Callable, Optional, Any
+from typing import List, Callable, Optional, Any, Union, NewType
 
 
 class DQN(nn.Module):
 
-    size: int
+    size: np.ndarray
     actions_count: int
 
-    def __init__(self, size: int, actions_count: int):
+    def __init__(self, size: np.ndarray, actions_count: int):
         super(DQN, self).__init__()
 
         self.size, self.actions_count = size, actions_count
@@ -27,23 +27,27 @@ class DQN(nn.Module):
 
         self.sec2 = nn.Sequential(
             nn.Conv2d(16, 32, kernel_size = 3, stride = 2, padding = 1),
-            nn.BatchNorm2d(16),
+            nn.BatchNorm2d(32),
             nn.ReLU()
         )
 
         self.sec3 = nn.Sequential(
             nn.Conv2d(32, 32, kernel_size = 5, stride = 2, padding = 2),
-            nn.BatchNorm2d(16),
+            nn.BatchNorm2d(32),
             nn.ReLU()
         )
 
+        features, conv = size.copy(), None
         self.pipeline = [ self.sec1, self.sec2, self.sec3 ]
         for sec in self.pipeline:
-            conv = next(sec.modules())
+            iter = sec.modules()
 
-            size = (size + conv.padding * 2 - (conv.kernel_size - 1)) // conv.stride + 1
+            _, conv = next(iter), next(iter)
 
-        self.ln = nn.Linear(size * size * conv.out_channels, actions_count)
+            features = (features + np.array(conv.padding) * 2 - (np.array(conv.kernel_size) - 1) - 1) \
+                       // np.array(conv.stride) + 1
+
+        self.ln = nn.Linear(features[0] * features[1] * conv.out_channels, actions_count)
 
     def forward(self, inputs):
         for sec in self.pipeline:
@@ -54,26 +58,34 @@ class DQN(nn.Module):
 
 class Transition:
 
-    state: Tensor
+    loopable = NewType('loopable', Union[None, list, np.ndarray, Tensor])
+
+    state: Optional[Tensor] = None
     action: Tensor
-    state_result: Tensor
+    state_result: Optional[Tensor] = None
     reward: Tensor
 
-    def __init__(self, state: Tensor, action: Tensor, state_result: Tensor, reward: Tensor):
-        self.state = state
+    def __init__(self, state: loopable, action: Tensor, state_result: loopable, reward: Tensor):
+        if state is not None:
+            self.state = state if isinstance(state, Tensor) else torch.FloatTensor(state)
+
         self.action = action
-        self.state_result = state_result
+
+        if state_result is not None:
+            self.state_result = state_result if isinstance(state_result, Tensor) else torch.FloatTensor(state_result)
         self.reward = reward
 
 
 class ReplayMemory:
+
+    MEMORY_CAPACITY: int = 30000
 
     bagging: float = 0.34
     capacity: int
     memory: List[Transition]
     position: int
 
-    def __init__(self, capacity: int):
+    def __init__(self, capacity: int = 30000):
         self.capacity = capacity
         self.memory = []
         self.position = 0
@@ -87,8 +99,8 @@ class ReplayMemory:
 
         self.position = (self.position + 1) % self.capacity
 
-    def sample(self, batch_size) -> Optional[List[Transition]]:
-        if np.random.random() < ReplayMemory.bagging:
+    def sample(self, batch_size, bagging = False) -> Optional[List[Transition]]:
+        if not bagging or np.random.random() < ReplayMemory.bagging:
             return random.sample(self.memory, batch_size)
 
         return None
@@ -99,7 +111,7 @@ class ReplayMemory:
 
 class Agent:
 
-    BATCH_SIZE = 128
+    BATCH_SIZE = 32
     GAMMA = 0.999
     EPS_START = 0.9
     EPS_END = 0.05
@@ -110,13 +122,12 @@ class Agent:
     action_count: int
     size: int
     action_pool: Any
-    memory_capacity: int
     rewarder: Callable
     step: int = 0
 
-    def __init__(self, size, action_pool, rewarder, memory_capacity):
+    def __init__(self, size, action_pool, rewarder):
 
-        self.size, self.action_pool, self.memory_capacity = size, action_pool, memory_capacity
+        self.size, self.action_pool = size, action_pool
         self.rewarder = rewarder
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -125,10 +136,10 @@ class Agent:
 
         self.policy = DQN(size, self.action_count).to(self.device)
         self.target = DQN(size, self.action_count).to(self.device)
-        self.target.load_state_dict(self.policy.parameters())
+        self.target.load_state_dict(self.policy.state_dict())
 
         self.optimizer = RMSprop(self.policy.parameters())
-        self.memory = ReplayMemory(memory_capacity)
+        self.memory = ReplayMemory()
 
     def choose_actions(self, state):
         if state is None:
@@ -139,32 +150,35 @@ class Agent:
 
         if sample > eps_threshold:
             with torch.no_grad():
-                # TODO(0) action pool
-                return self.policy.forward(state).max(1)[1].view(1, 1)
+                outputs = self.policy.forward(state.unsqueeze(0)).squeeze(0)
+                actions = outputs.view(2, 3).max(1).indices
+
+                return actions
         else:
             if self.multiple:
-                actions = np.random.rand(len(self.action_pool)) * self.action_pool
+                prob = np.random.rand(self.action_count)
+                acts = []
+
+                acc = 0
+                for step in self.action_pool:
+                    acts.append(prob[acc:acc + step].argmax())
+                    acc += step
+
+                actions = np.array(acts)
             else:
-                actions = [random.randrange(self.action_count)]
+                actions = np.random.rand(self.action_count).argmax()
 
             return torch.LongTensor(actions)
 
-    def optimize_model(self, transitions):
+    def optimize_model(self):
         if len(self.memory) < Agent.BATCH_SIZE:
             return
 
-        seen_transitions = self.memory.sample(Agent.BATCH_SIZE)
-        if seen_transitions is not None:
-            """ Train by replaying past experiences """
-            self.optimize_model_batch(seen_transitions)
+        # TODO(0) - Rework and optimization needed
+        transitions = self.memory.sample(Agent.BATCH_SIZE)
 
-        self.optimize_model_batch(transitions)
-        self.memory.push(transitions)
-
-    def optimize_model_batch(self, transitions):
-
-        states_prev = map(lambda t: t.state, transitions)
-        states_curr = map(lambda t: t.state_result, transitions)
+        states_prev = torch.FloatTensor([ t.state.numpy() for t in transitions if t.state is not None ])
+        states_curr = torch.FloatTensor([ t.state_result.numpy() for t in transitions if t.state_result is not None ])
 
         # Compute the actions Q(s_t) and Q'(sc_t)
         outputs_policy = self.policy.forward(states_prev)

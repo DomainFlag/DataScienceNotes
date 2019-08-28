@@ -5,7 +5,6 @@ import scipy.interpolate as interpolate
 
 from pygame import gfxdraw
 from modules import Sprite
-from typing import Any
 
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
@@ -19,6 +18,7 @@ ROAD_HINT = (143, 152, 86)
 
 class Track:
 
+    TRACK_PRECISION: int = 5000
     WIDTH_MAX: int = 60
 
     sprite: Sprite = None
@@ -28,7 +28,8 @@ class Track:
     index: int = 0
 
     static_params: dict = {
-        "width_max": WIDTH_MAX
+        "width_max": WIDTH_MAX,
+        "index_max": TRACK_PRECISION
     }
 
     def initialize(self, size, text_renderer):
@@ -144,7 +145,7 @@ class Track:
 
             x0, x1, x2 = pt1[0], transl_target_pt[0], pt1[0] + calc_distance(self.pts[0], self.pts[1])
 
-            return x0 <= x1 <= x2
+            return np.isnan([x0, x1, x2]).any() or (x0 <= x1 <= x2)
 
     def act(self, scaling):
         self.sprite.act(scaling)
@@ -153,8 +154,12 @@ class Track:
         if curr_index < self.index:
             self.lap += 1
 
+            return True
+
         self.index = curr_index
         self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
+
+        return False
 
     def render(self, screen, hint = True):
         # Render track
@@ -174,7 +179,7 @@ class Track:
         params.update({
             "width": self.width,
             "index": self.index,
-            "alive": True
+            "alive": self.is_alive()
         })
 
         params.update(self.sprite.get_params())
@@ -288,7 +293,7 @@ def shape_coordinates(pivots, scaling = Track.WIDTH_MAX / 2.0):
     return [x0, x1], orientation, bc
 
 
-def interpolated_map_generate(pivots, noise = None, knots = 3, order = False, precision = 20000):
+def interpolated_map_generate(pivots, noise = None, knots = 3, order = False, precision = Track.TRACK_PRECISION):
     if order:
         indices = np.argsort(pivots.T[0])
         xs, ys = pivots[indices].T
