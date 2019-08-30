@@ -5,8 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as fc
 
 from torch.optim.rmsprop import RMSprop
-from torch.tensor import Tensor
-from typing import List, Callable, Optional, Any, Union, NewType
+from collections import namedtuple
+from typing import List, Callable, Optional, Any
+
+Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'))
 
 
 class DQN(nn.Module):
@@ -56,26 +58,6 @@ class DQN(nn.Module):
         return self.ln(inputs.view(inputs.size(0), -1))
 
 
-class Transition:
-
-    loopable = NewType('loopable', Union[None, list, np.ndarray, Tensor])
-
-    state: Optional[Tensor] = None
-    action: Tensor
-    state_result: Optional[Tensor] = None
-    reward: Tensor
-
-    def __init__(self, state: loopable, action: Tensor, state_result: loopable, reward: Tensor):
-        if state is not None:
-            self.state = state if isinstance(state, Tensor) else torch.FloatTensor(state)
-
-        self.action = action
-
-        if state_result is not None:
-            self.state_result = state_result if isinstance(state_result, Tensor) else torch.FloatTensor(state_result)
-        self.reward = reward
-
-
 class ReplayMemory:
 
     MEMORY_CAPACITY: int = 30000
@@ -99,9 +81,17 @@ class ReplayMemory:
 
         self.position = (self.position + 1) % self.capacity
 
-    def sample(self, batch_size, bagging = False) -> Optional[List[Transition]]:
+    def sample_batch_transition(self, batch_size, bagging = False) -> Optional[List[Transition]]:
         if not bagging or np.random.random() < ReplayMemory.bagging:
             return random.sample(self.memory, batch_size)
+
+        return None
+
+    def sample_transition_batch(self, batch_size, bagging = False) -> Optional[Transition]:
+        transitions = self.sample_batch_transition(batch_size, bagging = bagging)
+
+        if transitions is not None:
+            return Transition(*zip(*transitions))
 
         return None
 
@@ -111,7 +101,7 @@ class ReplayMemory:
 
 class Agent:
 
-    BATCH_SIZE = 32
+    BATCH_SIZE = 4
     GAMMA = 0.999
     EPS_START = 0.9
     EPS_END = 0.05
@@ -174,8 +164,17 @@ class Agent:
         if len(self.memory) < Agent.BATCH_SIZE:
             return
 
-        # TODO(0) - Rework and optimization needed
-        transitions = self.memory.sample(Agent.BATCH_SIZE)
+        # Memory transitions
+        transition_batch = self.memory.sample_transition_batch(Agent.BATCH_SIZE)
+
+        print(transition_batch.reward)
+
+        state_batch = torch.cat(transition_batch.state)
+        action_batch = torch.cat(transition_batch.action)
+        reward_batch = torch.cat(transition_batch.reward)
+
+        print(reward_batch)
+        return
 
         states_prev = torch.FloatTensor([ t.state.numpy() for t in transitions if t.state is not None ])
         states_curr = torch.FloatTensor([ t.state_result.numpy() for t in transitions if t.state_result is not None ])

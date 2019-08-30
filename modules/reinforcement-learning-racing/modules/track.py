@@ -19,6 +19,7 @@ ROAD_HINT = (143, 152, 86)
 class Track:
 
     TRACK_PRECISION: int = 5000
+    TRACK_OFFSET: int = TRACK_PRECISION // 10
     WIDTH_MAX: int = 60
 
     sprite: Sprite = None
@@ -26,6 +27,7 @@ class Track:
     lap: int = 0
     width: float = 0.
     index: int = 0
+    progress: int = 0
 
     static_params: dict = {
         "width_max": WIDTH_MAX,
@@ -150,14 +152,27 @@ class Track:
     def act(self, scaling):
         self.sprite.act(scaling)
 
-        curr_index = self.get_sprite_index(self.sprite.position, self.index)
-        if curr_index < self.index:
+        index = self.get_sprite_index(self.sprite.position, self.index)
+        if abs(self.index - index) > Track.TRACK_OFFSET:
+            # The sprite is located between the start/end extremity
+            index_lower, index_upper = (index, self.index) if (self.index > index) else (self.index, index)
+
+            offset = index_lower - (index_upper - len(self.track_data))
+        else:
+            offset = index - self.index
+
+        self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
+        self.index = index
+        self.progress += offset
+
+        if self.progress >= len(self.track_data):
+            self.progress %= len(self.track_data)
             self.lap += 1
+        elif self.progress < 0:
+            self.progress = len(self.track_data) + self.progress
+            self.lap -= 1
 
             return True
-
-        self.index = curr_index
-        self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
 
         return False
 
@@ -179,6 +194,8 @@ class Track:
         params.update({
             "width": self.width,
             "index": self.index,
+            "lap": self.lap,
+            "progress": (self.progress, self.progress / self.TRACK_PRECISION * 100),
             "alive": self.is_alive()
         })
 
@@ -267,28 +284,29 @@ def pivot_map_generate(size, width, height, threshold_dist = 0.75, threshold_ang
     return points, pivots
 
 
-def pivot_adjacent(pivots, index):
-    if index == 0:
-        return np.concatenate(([pivots[-1]], pivots[index:index + 2])), [len(pivots) - 1, index, index + 1]
-    elif index == len(pivots) - 1:
-        return np.concatenate((pivots[index - 1:index + 1], [pivots[0]])), [index - 1, index, 0]
-    else:
-        return np.array(pivots[index - 1:index + 2]), list(range(index - 1, index + 2))
+def pivot_adjacent(pivots, index, boundary = True):
+    indices = [ x % len(pivots) for x in range(index, index + 3) ]
+    points = [ pivots[x % len(pivots)] for x in indices if not boundary or not x == 0 ]
+
+    if boundary and 0 in indices:
+        points.append(pivots[(indices[-1] + 1) % len(pivots)])
+
+    return np.array(points), indices
 
 
-def shape_coordinates(pivots, scaling = Track.WIDTH_MAX / 2.0):
-    if len(pivots) != 3:
-        raise Exception("Requires three pivots")
+def shape_coordinates(points, scaling = Track.WIDTH_MAX / 2.0):
+    if len(points) != 3:
+        raise Exception("Requires three points")
 
-    ab, bc, ac = calc_distance(*pivots[0:2]), calc_distance(*pivots[1:]), calc_distance(pivots[0], pivots[2])
-    width, height = (pivots[2] - pivots[1])
+    ab, bc, ac = calc_distance(*points[0:2]), calc_distance(*points[1:]), calc_distance(points[0], points[2])
+    width, height = (points[2] - points[1])
 
     ac1 = (bc ** 2 + ac ** 2 - ab ** 2) / (2 * ac)
     orientation, alpha = np.arctan2(height, width), np.arcsin(ac1 / bc)
     angle1, angle2 = orientation - alpha, orientation + (np.pi - alpha)
 
-    x0 = np.array([np.cos(angle1), np.sin(angle1)]) * scaling + pivots[1]
-    x1 = np.array([np.cos(angle2), np.sin(angle2)]) * scaling + pivots[1]
+    x0 = np.array([np.cos(angle1), np.sin(angle1)]) * scaling + points[1]
+    x1 = np.array([np.cos(angle2), np.sin(angle2)]) * scaling + points[1]
 
     return [x0, x1], orientation, bc
 
@@ -303,6 +321,7 @@ def interpolated_map_generate(pivots, noise = None, knots = 3, order = False, pr
     xs, ys = np.r_[xs, xs[0]], np.r_[ys, ys[0]]
     weights = noise if noise is not None else None
 
+    # Create the B-spline representation that fits most the data points
     tck, u = interpolate.splprep([xs, ys], w = weights, s = 0, t = knots, per = True)
 
     # Evaluate the spline fits for precision* evenly spaced distance values
@@ -311,7 +330,7 @@ def interpolated_map_generate(pivots, noise = None, knots = 3, order = False, pr
     return xi, yi
 
 
-def draw_aaline(surface, line, color, width = 1.0, length = None):
+def draw_line_aliased(surface, line, color, width = 1.0, length = None):
     center = np.mean(line, axis = 0)
 
     if length is None:
@@ -343,10 +362,10 @@ def track_line_render(step, offset):
             pos1 = np.array([x1, y1]) + track_offset
             pos2 = np.array([xi[ind], yi[ind]]) + track_offset
 
-            draw_aaline(screen, [pos1, pos2], ROAD_TRACK, width = Track.WIDTH_MAX)
+            draw_line_aliased(screen, [pos1, pos2], ROAD_TRACK, width = Track.WIDTH_MAX)
 
             if index % step > offset:
-                draw_aaline(screen, [pos1, pos2], ROAD_HINT, width = 2, length = 4.0)
+                draw_line_aliased(screen, [pos1, pos2], ROAD_HINT, width = 2, length = 4.0)
 
     return renderer
 

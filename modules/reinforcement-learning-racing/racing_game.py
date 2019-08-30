@@ -4,7 +4,6 @@ import os
 import torch
 
 from PIL import Image
-from typing import Optional
 from modules import Track, Sprite, Agent, Transition
 
 TITLE = "RL racer"
@@ -55,19 +54,25 @@ def create_snapshot(surface, filename: str = None, format = "PNG", save = False,
 
 
 def smoothness(x):
-    return np.sqrt(np.log10(x))
+    """ X value is expected to be normalized - [0, 1] """
+    assert(0.0 <= x <= 1.0)
+
+    return np.sqrt(np.log(x + 1.0) / np.log(2))
 
 
-def rewarder(prev_params: Optional[dict], curr_params: dict):
+def rewarder(prev_params: dict, curr_params: dict):
     if not curr_params["alive"]:
         return -1.0
 
-    reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"] * (np.e - 1))
-    if prev_params is not None and curr_params["acc"] < prev_params["acc"]:
-        reward_acc = np.sqrt(reward_acc)
+    if curr_params["acc"] >= 0.0:
+        reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"])
+        if curr_params["acc"] < prev_params["acc"]:
+            reward_acc = np.sqrt(reward_acc)
+    else:
+        reward_acc = -0.25
 
     if curr_params["alive"]:
-        reward_pos = 1.0 - smoothness(curr_params["width"] / curr_params["width_max"] * (np.e - 1))
+        reward_pos = 1.0 - smoothness(curr_params["width"] / curr_params["width_max"])
     else:
         reward_pos = 0
 
@@ -76,12 +81,24 @@ def rewarder(prev_params: Optional[dict], curr_params: dict):
     return reward
 
 
-def racing_game(agent_active = True, episode_count = 25):
+def get_caption_renderer(clock = False):
+    if clock:
+        message = "{:s}: {:.2f}fps, index - {:d}, progress - {:5.2f}%, lap - {:d}"
+    else:
+        message = "{:s}: index - {:d}, progress - {:5.2f}%, lap - {:d}"
+
+    def renderer(args):
+        pygame.display.set_caption(message.format(*args))
+
+    return renderer
+
+
+def racing_game(agent_active = False, episode_count = 25):
 
     # Set full screen centered
     os.environ['SDL_VIDEO_CENTERED'] = '1'
     pygame.init()
-    pygame.display.set_caption(TITLE)
+    caption_renderer = get_caption_renderer(clock = not agent_active)
 
     # Set the height and width of the screen
     screen = pygame.display.set_mode(SIZE)
@@ -111,12 +128,7 @@ def racing_game(agent_active = True, episode_count = 25):
         # Set up the agent
         agent = Agent(np.array(SIZE), np.array([Sprite.MOTION_SPACE_COUNT, Sprite.STEERING_SPACE_COUNT]), rewarder)
 
-    # States
-    prev_state, curr_state = None, None
-    prev_params, curr_params = None, None
-
-    actions = None
-
+    state, params = None, None
     episode_counter = 0
 
     while not done:
@@ -134,11 +146,6 @@ def racing_game(agent_active = True, episode_count = 25):
                 track.sprite.rotation += track.sprite.steering * attenuation
             elif keys[pygame.K_RIGHT]:
                 track.sprite.rotation -= track.sprite.steering * attenuation
-        elif prev_state is not None:
-            # Generate actions
-            actions = agent.choose_actions(prev_state)
-
-            track.sprite.act_actions(actions)
 
         # User did something
         for event in pygame.event.get():
@@ -167,41 +174,50 @@ def racing_game(agent_active = True, episode_count = 25):
         # Update the screen
         pygame.display.flip()
 
+        params_next = track.get_params()
         if not agent_active:
             # Compute rendering time
             curr_time = pygame.time.get_ticks()
             attenuation, prev_time = (curr_time - prev_time) / (1000 / FPS_CAP), curr_time
 
             # Handle constant FPS cap
-            pygame.display.set_caption("{0}: {1:.2f}".format(TITLE, clock.get_fps()))
+            caption_params = [ TITLE, clock.get_fps(), params_next["index"], params_next["progress"][1], params_next["lap"] ]
 
             clock.tick(FPS_CAP)
         else:
-            curr_state, curr_params = create_snapshot(surface, raw = True, tensor = True), track.get_params()
+            state_next = create_snapshot(surface, raw = True, tensor = True)
 
-            # Create a fresh transition
-            transition = Transition(prev_state, actions, curr_state, rewarder(prev_params, curr_params))
+            # Generate actions
+            actions = agent.choose_actions(state)
+            track.sprite.act_actions(actions)
 
-            # Update the memory state
-            agent.memory.push(transition)
+            # Create transition and update memory state
+            if state is not None:
+                transition = Transition(state, actions, state_next, rewarder(params, params_next))
+                agent.memory.push(transition)
 
             # Optimize model
             agent.optimize_model()
 
+            flag = False
             if lap_finished:
                 episode_counter += 1
                 if episode_counter == episode_count:
                     done = True
                 else:
-                    # Initialize the environment and state
-                    track.reset_track()
+                    flag = True
 
-            if not curr_params["alive"]:
+            flag = flag or not params_next["alive"]
+            if flag:
                 # Initialize the environment and state
                 track.reset_track()
 
-            prev_state, curr_state = curr_state, None
-            prev_params, curr_params = curr_params, None
+                state_next, params_next = None, None
+
+            state, params = state_next, params_next
+            caption_params = [ TITLE, params["index"], params["progress"][1], params["lap"] ]
+
+        caption_renderer(caption_params)
 
     # Be IDLE friendly
     pygame.quit()
