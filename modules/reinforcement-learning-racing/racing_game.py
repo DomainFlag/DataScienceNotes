@@ -66,7 +66,7 @@ def rewarder(prev_params: dict, curr_params: dict):
 
     if curr_params["acc"] >= 0.0:
         reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"])
-        if curr_params["acc"] < prev_params["acc"]:
+        if curr_params["acc"] <= prev_params["acc"]:
             reward_acc = np.sqrt(reward_acc)
     else:
         reward_acc = -0.25
@@ -85,7 +85,7 @@ def get_caption_renderer(clock = False):
     if clock:
         message = "{:s}: {:.2f}fps, index - {:d}, progress - {:5.2f}%, lap - {:d}"
     else:
-        message = "{:s}: index - {:d}, progress - {:5.2f}%, lap - {:d}"
+        message = "{:s}: index - {:d}, progress - {:5.2f}%, lap - {:d}, episode - {:d}"
 
     def renderer(args):
         pygame.display.set_caption(message.format(*args))
@@ -93,7 +93,7 @@ def get_caption_renderer(clock = False):
     return renderer
 
 
-def racing_game(agent_active = False, episode_count = 25):
+def racing_game(agent_active = True, episode_count = 25):
 
     # Set full screen centered
     os.environ['SDL_VIDEO_CENTERED'] = '1'
@@ -166,7 +166,7 @@ def racing_game(agent_active = False, episode_count = 25):
         screen.fill(CLEAR_SCREEN)
 
         # Environment act
-        lap_finished = track.act(attenuation)
+        track.act(attenuation)
 
         # Render environment
         track.render(screen)
@@ -193,29 +193,36 @@ def racing_game(agent_active = False, episode_count = 25):
 
             # Create transition and update memory state
             if state is not None:
-                transition = Transition(state, actions, state_next, rewarder(params, params_next))
+                reward = torch.FloatTensor([rewarder(params, params_next)], device = agent.device)
+                actions_aligned = agent.reshape_actions(actions)
+
+                transition = Transition(state, actions_aligned, state_next, reward)
                 agent.memory.push(transition)
 
             # Optimize model
             agent.optimize_model()
 
             flag = False
-            if lap_finished:
-                episode_counter += 1
-                if episode_counter == episode_count:
-                    done = True
-                else:
-                    flag = True
+            # if track.lap == 3:
+            #     episode_counter += 1
+            #     if episode_counter == episode_count:
+            #         done = True
+            #     else:
+            #         flag = True
+
+            caption_params = [TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
+                              episode_counter]
 
             flag = flag or not params_next["alive"]
             if flag:
+                episode_counter += 1
+
                 # Initialize the environment and state
                 track.reset_track()
 
                 state_next, params_next = None, None
 
             state, params = state_next, params_next
-            caption_params = [ TITLE, params["index"], params["progress"][1], params["lap"] ]
 
         caption_renderer(caption_params)
 

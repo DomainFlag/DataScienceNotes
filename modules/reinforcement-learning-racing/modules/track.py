@@ -172,10 +172,6 @@ class Track:
             self.progress = len(self.track_data) + self.progress
             self.lap -= 1
 
-            return True
-
-        return False
-
     def render(self, screen, hint = True):
         # Render track
         screen.blit(self.track, (0, 0))
