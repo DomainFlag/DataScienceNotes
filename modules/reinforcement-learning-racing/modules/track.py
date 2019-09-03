@@ -22,6 +22,9 @@ class Track:
     TRACK_OFFSET: int = TRACK_PRECISION // 10
     WIDTH_MAX: int = 60
 
+    points: list
+    pivots: list
+
     sprite: Sprite = None
     pts: list
     lap: int = 0
@@ -34,23 +37,24 @@ class Track:
         "index_max": TRACK_PRECISION
     }
 
-    def initialize(self, size, text_renderer):
+    def initialize(self, size, text_renderer = None, index = 0, save = False, filename = None):
         self.size = size
 
         # Generate pivots
         self.track_offset = (np.mean(size) * 0.1).astype(int)
         track_size = np.array(size) - self.track_offset * 2.0
 
-        points, pivots = pivot_map_generate(32, *track_size)
-        noise = np.random.random(len(pivots) + 1) * 50.03
+        self.points, self.pivots = pivot_map_generate(32, *track_size)
+        noise = np.random.random(len(self.pivots) + 1) * 50.03
 
         # Create the track and renderer, render to static surface
-        xi, yi = interpolated_map_generate(np.array(pivots), noise = noise)
+        xi, yi = interpolated_map_generate(np.array(self.pivots), noise = noise)
         self.track_data = np.array([xi, yi]).T
-        self.track = render_track(size, pivots, points, xi, yi, self.track_offset, text_renderer, track_line_render(320, 175))
+        self.track = render_track(size, self.pivots, self.points, xi, yi, self.track_offset, text_renderer,
+                                  track_line_render(320, 175))
 
         # Create the sprite
-        start_pos, start_rot = self.get_metadata(index=0)
+        start_pos, start_rot = self.get_metadata(index = index)
 
         self.sprite = Sprite(np.array(start_pos), start_rot, self.track_offset)
         self.sprite.initialize()
@@ -59,6 +63,10 @@ class Track:
         road_tex = pygame.image.load("./assets/road.jpg")
         road_tex = pygame.transform.scale(road_tex, (35, 35))
         road_tex.set_colorkey(TRANSPARENT)
+
+        if save:
+            # Save track data for inference and model validation
+            self.save_track_to_dict(filename = "track_model.npy" if filename is None else filename)
 
     def get_sprite_index(self, position, index):
         while True:
@@ -198,6 +206,19 @@ class Track:
         params.update(self.sprite.get_params())
 
         return params
+
+    def save_track_to_dict(self, filename):
+        """ Save track data internally """
+
+        # save track data
+        track_dict = {
+            'size': self.size,
+            'points': self.points,
+            'pivots': self.pivots,
+            'data': self.track_data
+        }
+
+        np.save("./models/" + filename, track_dict)
 
 
 def get_angle(p0, p1, p2):
@@ -393,12 +414,13 @@ def render_track(size, pivots, points, xi, yi, track_offset, text_renderer, trac
         for point in points:
             pygame.draw.circle(track, WHITE, point + track_offset, 5)
 
-        for index, pivot in enumerate(pivots):
-            text_renderer(str(index), pivot + track_offset)
+        if text_renderer is not None:
+            for index, pivot in enumerate(pivots):
+                text_renderer(str(index), pivot + track_offset)
 
-            pygame.draw.circle(track, RED, pivot + track_offset, 5)
+                pygame.draw.circle(track, RED, pivot + track_offset, 5)
 
-    # Optimize drawing
-    track.convert()
+    # # Optimize drawing
+    # track.convert()
 
     return track

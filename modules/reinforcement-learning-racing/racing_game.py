@@ -7,7 +7,7 @@ from PIL import Image
 from modules import Track, Sprite, Agent, Transition
 
 TITLE = "RL racer"
-SIZE = [700, 700]
+SIZE = [600, 600]
 
 FPS_CAP = 60.0
 TRANSPARENT = (0, 0, 0, 0)
@@ -55,7 +55,7 @@ def create_snapshot(surface, filename: str = None, format = "PNG", save = False,
 
 def smoothness(x):
     """ X value is expected to be normalized - [0, 1] """
-    assert(0.0 <= x <= 1.0)
+    assert 0.0 <= x <= 1.0, "x < 0 or x > 1.0, x - %s" % (x,)
 
     return np.sqrt(np.log(x + 1.0) / np.log(2))
 
@@ -67,47 +67,53 @@ def rewarder(prev_params: dict, curr_params: dict):
     if curr_params["acc"] >= 0.0:
         reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"])
         if curr_params["acc"] <= prev_params["acc"]:
-            reward_acc = np.sqrt(reward_acc)
+            reward_acc = reward_acc ** 2
     else:
         reward_acc = -0.25
 
-    if curr_params["alive"]:
-        reward_pos = 1.0 - smoothness(curr_params["width"] / curr_params["width_max"])
-    else:
-        reward_pos = 0
+    reward_pos = 1.0 - smoothness(curr_params["width"] / curr_params["width_max"])
 
     reward = 1.0 + reward_acc + reward_pos
 
     return reward
 
 
-def get_caption_renderer(clock = False):
+def get_caption_renderer(window_active, clock = False):
     if clock:
         message = "{:s}: {:.2f}fps, index - {:d}, progress - {:5.2f}%, lap - {:d}"
     else:
         message = "{:s}: index - {:d}, progress - {:5.2f}%, lap - {:d}, episode - {:d}"
 
     def renderer(args):
-        pygame.display.set_caption(message.format(*args))
+        if window_active:
+            pygame.display.set_caption(message.format(*args))
 
     return renderer
 
 
-def racing_game(agent_active = True, episode_count = 25):
+def racing_game(agent_active = True, episode_count = 25, frame_buffer = True):
 
-    # Set full screen centered
-    os.environ['SDL_VIDEO_CENTERED'] = '1'
+    # Initialize pygame modules
     pygame.init()
-    caption_renderer = get_caption_renderer(clock = not agent_active)
 
-    # Set the height and width of the screen
-    screen = pygame.display.set_mode(SIZE)
-    surface = pygame.display.get_surface()
+    if not frame_buffer:
+        # Set full screen centered
+        os.environ['SDL_VIDEO_CENTERED'] = '1'
 
-    # Set the icon
-    icon = pygame.image.load("./assets/icon.png")
-    icon.set_colorkey(TRANSPARENT)
-    pygame.display.set_icon(icon)
+        # Set the height and width of the screen
+        screen = pygame.display.set_mode(SIZE)
+        surface = pygame.display.get_surface()
+
+        # Set the icon
+        icon = pygame.image.load("./assets/icon.png")
+        icon.set_colorkey(TRANSPARENT)
+        pygame.display.set_icon(icon)
+    else:
+        screen = pygame.Surface(SIZE)
+        surface = screen
+
+    # Window caption renderer
+    caption_renderer = get_caption_renderer(frame_buffer, clock = not agent_active)
 
     # Loop until the user clicks the close button.
     done = False
@@ -117,7 +123,7 @@ def racing_game(agent_active = True, episode_count = 25):
 
     # Create the environment
     track = Track()
-    track.initialize(SIZE, text_renderer)
+    track.initialize(SIZE, text_renderer, save = True)
 
     attenuation = 1.0
     if not agent_active:
@@ -126,41 +132,45 @@ def racing_game(agent_active = True, episode_count = 25):
         prev_time = pygame.time.get_ticks()
     else:
         # Set up the agent
-        agent = Agent(np.array(SIZE), np.array([Sprite.MOTION_SPACE_COUNT, Sprite.STEERING_SPACE_COUNT]), rewarder)
+        action_space = np.array([Sprite.MOTION_SPACE_COUNT, Sprite.STEERING_SPACE_COUNT])
+
+        agent = Agent(np.array(SIZE), action_space, rewarder)
 
     state, params = None, None
-    episode_counter = 0
 
     while not done:
 
-        if not agent_active:
-            # Continuous key press
-            keys = pygame.key.get_pressed()
+        # Event queue while window is active
+        if not frame_buffer:
 
-            if keys[pygame.K_UP]:
-                track.sprite.movement(Sprite.acceleration * attenuation)
-            elif keys[pygame.K_DOWN]:
-                track.sprite.movement(-Sprite.acceleration * attenuation)
+            if not agent_active:
+                # Continuous key press
+                keys = pygame.key.get_pressed()
 
-            if keys[pygame.K_LEFT]:
-                track.sprite.rotation += track.sprite.steering * attenuation
-            elif keys[pygame.K_RIGHT]:
-                track.sprite.rotation -= track.sprite.steering * attenuation
+                if keys[pygame.K_UP]:
+                    track.sprite.movement(Sprite.acceleration * attenuation)
+                elif keys[pygame.K_DOWN]:
+                    track.sprite.movement(-Sprite.acceleration * attenuation)
 
-        # User did something
-        for event in pygame.event.get():
-            # Close button is clicked
-            if event.type == pygame.QUIT:
-                done = True
+                if keys[pygame.K_LEFT]:
+                    track.sprite.rotation += track.sprite.steering * attenuation
+                elif keys[pygame.K_RIGHT]:
+                    track.sprite.rotation -= track.sprite.steering * attenuation
 
-            # Escape key is pressed
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+            # User did something
+            for event in pygame.event.get():
+                # Close button is clicked
+                if event.type == pygame.QUIT:
                     done = True
-                elif event.key == pygame.K_PRINT:
-                    create_snapshot(surface, filename = "screen.png", save = True)
-                elif event.key == pygame.K_r:
-                    track.reset_track()
+
+                # Escape key is pressed
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        done = True
+                    elif event.key == pygame.K_PRINT:
+                        create_snapshot(surface, filename = "screen.png", save = True)
+                    elif event.key == pygame.K_r:
+                        track.reset_track()
 
         # Clear the screen and set the screen background
         screen.fill(CLEAR_SCREEN)
@@ -171,8 +181,9 @@ def racing_game(agent_active = True, episode_count = 25):
         # Render environment
         track.render(screen)
 
-        # Update the screen
-        pygame.display.flip()
+        if not frame_buffer:
+            # Update the screen
+            pygame.display.flip()
 
         params_next = track.get_params()
         if not agent_active:
@@ -181,7 +192,8 @@ def racing_game(agent_active = True, episode_count = 25):
             attenuation, prev_time = (curr_time - prev_time) / (1000 / FPS_CAP), curr_time
 
             # Handle constant FPS cap
-            caption_params = [ TITLE, clock.get_fps(), params_next["index"], params_next["progress"][1], params_next["lap"] ]
+            caption_params = [ TITLE, clock.get_fps(), params_next["index"], params_next["progress"][1],
+                               params_next["lap"] ]
 
             clock.tick(FPS_CAP)
         else:
@@ -193,8 +205,8 @@ def racing_game(agent_active = True, episode_count = 25):
 
             # Create transition and update memory state
             if state is not None:
-                reward = torch.FloatTensor([rewarder(params, params_next)], device = agent.device)
-                actions_aligned = agent.reshape_actions(actions)
+                reward = torch.FloatTensor([rewarder(params, params_next)]).to(agent.device)
+                actions_aligned = agent.reshape_actions(actions).to(agent.device)
 
                 transition = Transition(state, actions_aligned, state_next, reward)
                 agent.memory.push(transition)
@@ -202,25 +214,19 @@ def racing_game(agent_active = True, episode_count = 25):
             # Optimize model
             agent.optimize_model()
 
-            flag = False
-            # if track.lap == 3:
-            #     episode_counter += 1
-            #     if episode_counter == episode_count:
-            #         done = True
-            #     else:
-            #         flag = True
+            # Caption parameters
+            caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
+                               agent.episode ]
 
-            caption_params = [TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
-                              episode_counter]
-
-            flag = flag or not params_next["alive"]
-            if flag:
-                episode_counter += 1
-
+            if not params_next["alive"]:
                 # Initialize the environment and state
                 track.reset_track()
+                agent.model_new_episode()
 
                 state_next, params_next = None, None
+
+                if agent.episode == episode_count:
+                    done = False
 
             state, params = state_next, params_next
 

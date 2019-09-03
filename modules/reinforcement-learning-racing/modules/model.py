@@ -60,7 +60,7 @@ class DQN(nn.Module):
 
 class ReplayMemory:
 
-    MEMORY_CAPACITY: int = 30000
+    MEMORY_CAPACITY: int = 3000
 
     bagging: float = 0.34
     capacity: int
@@ -69,10 +69,10 @@ class ReplayMemory:
     reward_acc: float = 0.
     reward_count: int = 0
 
-    def __init__(self, capacity: int = 30000):
-        self.capacity = capacity
+    def __init__(self, capacity: int = None):
         self.memory = []
         self.position = 0
+        self.capacity = capacity if capacity is not None else ReplayMemory.MEMORY_CAPACITY
 
     def push(self, transition: Transition):
         """ Save transition by possibly overriding pre-existing transitions """
@@ -108,7 +108,7 @@ class ReplayMemory:
 
 class Agent:
 
-    BATCH_SIZE = 16
+    BATCH_SIZE = 128
     GAMMA = 0.999
     EPS_START = 0.9
     EPS_END = 0.05
@@ -122,22 +122,22 @@ class Agent:
     size: int
     action_pool: Any
     rewarder: Callable
+    episode: int = 0
     step: int = 0
-    step_every: int = 3
+    step_every: int = 50
     step_loss: list = [0]
     step_reward: list = [0]
-    step_loss_prev: float = 0.
-    step_loss_curr: float = np.inf
+    step_loss_cur: float = 0.
+    step_loss_min: float = np.inf
 
     def __init__(self, size, action_pool, rewarder):
 
-        self.size, self.action_pool = size, action_pool
-        self.rewarder = rewarder
+        self.size, self.action_pool, self.rewarder = size, action_pool, rewarder
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.multiple = isinstance(action_pool, (list, np.ndarray))
         self.action_count = action_pool if not self.multiple else np.sum(action_pool)
-        self.action_cum = torch.cumsum(torch.from_numpy(self.action_pool), dim = 0) - self.action_pool[0] \
+        self.action_cum = (torch.cumsum(torch.from_numpy(self.action_pool), dim = 0) - self.action_pool[0]).to(self.device) \
             if self.multiple else None
 
         self.policy = DQN(size, self.action_count).to(self.device)
@@ -156,7 +156,7 @@ class Agent:
 
         if sample > eps_threshold:
             with torch.no_grad():
-                outputs = self.policy.forward(state.unsqueeze(0)).squeeze(0)
+                outputs = self.policy.forward(state.clone().to(self.device).unsqueeze(0)).squeeze(0)
                 actions = outputs.view(2, 3).max(1).indices
 
                 return actions
@@ -174,7 +174,7 @@ class Agent:
             else:
                 actions = np.random.rand(self.action_count).argmax()
 
-            return torch.LongTensor(actions)
+            return torch.LongTensor(actions).to(self.device)
 
     def reshape_actions(self, actions):
         if self.action_cum is not None:
@@ -185,17 +185,17 @@ class Agent:
     def unpack_actions(self, actions, tensor = True):
         if self.multiple:
             values = []
-            batch_actions = actions.detach().numpy()
+            batch_actions = actions.detach().cpu().numpy()
             for action in batch_actions:
                 values.append([ action[index_start:index_start + self.action_pool[index]].max()
                                 for index, index_start in enumerate(self.action_cum) ])
 
             actions = np.array(values)
         else:
-            actions = actions.max(dim = 1).values
+            actions = actions.cpu().max(dim = 1).values
 
         if tensor and not isinstance(actions, torch.Tensor):
-            return torch.from_numpy(actions)
+            return torch.from_numpy(actions).to(self.device)
 
         return actions
 
@@ -206,7 +206,7 @@ class Agent:
         # Memory transitions
         transition_batch = self.memory.sample_transition_batch(Agent.BATCH_SIZE)
 
-        state_batch = torch.stack(transition_batch.state)
+        state_batch = torch.stack(transition_batch.state).clone().to(self.device)
         action_batch = torch.stack(transition_batch.action)
         reward_batch = torch.cat(transition_batch.reward)
 
@@ -214,10 +214,10 @@ class Agent:
         outputs_action_policy = self.policy.forward(state_batch).gather(1, action_batch).sum(dim = 1)
 
         # Compute target (outputs_action_target)
-        target = torch.zeros((Agent.BATCH_SIZE, 2), dtype = torch.float)
+        target = torch.zeros((Agent.BATCH_SIZE, 2), dtype = torch.float).to(self.device)
 
         state_mask = torch.tensor([ s is not None for s in transition_batch.next_state ], dtype = torch.uint8)
-        state_non_final = torch.stack([ s for s in transition_batch.next_state if s is not None ])
+        state_non_final = torch.stack([ s for s in transition_batch.next_state if s is not None ]).clone().to(self.device)
 
         target[state_mask] = self.unpack_actions(self.target.forward(state_non_final))
         outputs_action_target = reward_batch + (target.sum(dim = 1) * Agent.GAMMA)
@@ -235,30 +235,33 @@ class Agent:
         self.step_loss[-1] += loss.item()
 
         if self.step % Agent.step_every == 0:
+            self.step_loss_cur = self.step_loss[-1] / self.step_every
             self.step_loss.append(0)
-            self.step_loss_curr = self.step_loss[-1] / self.step_every
 
-            if self.step_loss_curr < self.step_loss_prev:
-                print(f"Loss decreased ({self.step_loss_prev:.6f} --> {self.step_loss_curr:.6f}).  Saving model ...")
+            print(f"Episode: {self.episode}\tStep: {self.step // Agent.step_every}\tTraining Loss: {self.step_loss_cur:.6f}")
+            if self.step_loss_cur < self.step_loss_min:
+                print(f"Loss decreased ({self.step_loss_min:.6f} --> {self.step_loss_cur:.6f}).  Saving model ...")
 
-                self.save_network_to_dict("./models/model.pt")
-
-            self.step_loss_prev = self.step_loss_curr
+                self.save_network_to_dict("model.pt")
+                self.step_loss_min = self.step_loss_cur
 
         if self.step % Agent.TARGET_UPDATE == 0:
             self.target.load_state_dict(self.policy.state_dict())
 
-    def reset_a(self):
+    def model_new_episode(self):
+        self.episode += 1
+
         self.step_reward[-1] = self.memory.reward_acc / self.memory.reward_count
         self.step_reward.append(0)
 
         self.memory.reset_history()
 
-    def save_network_to_dict(self, filepath):
+    def save_network_to_dict(self, filename):
         """ Save a network to the dict """
 
         # save network state
         checkpoint = {
+            'episode': self.episode,
             'loss_history': self.step_loss,
             'loss_model': self.step_loss[-1] / Agent.step_every,
             'reward_history': self.step_reward,
@@ -267,4 +270,4 @@ class Agent:
         }
 
         # save the network's model as the checkpoint
-        torch.save(checkpoint, filepath)
+        torch.save(checkpoint, "./models/" + filename)
