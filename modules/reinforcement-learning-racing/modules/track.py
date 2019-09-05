@@ -37,36 +37,43 @@ class Track:
         "index_max": TRACK_PRECISION
     }
 
-    def initialize(self, size, text_renderer = None, index = 0, save = False, filename = None):
-        self.size = size
-
-        # Generate pivots
-        self.track_offset = (np.mean(size) * 0.1).astype(int)
-        track_size = np.array(size) - self.track_offset * 2.0
-
-        self.points, self.pivots = pivot_map_generate(32, *track_size)
-        noise = np.random.random(len(self.pivots) + 1) * 50.03
-
-        # Create the track and renderer, render to static surface
-        xi, yi = interpolated_map_generate(np.array(self.pivots), noise = noise)
-        self.track_data = np.array([xi, yi]).T
-        self.track = render_track(size, self.pivots, self.points, xi, yi, self.track_offset, text_renderer,
-                                  track_line_render(320, 175))
-
-        # Create the sprite
-        start_pos, start_rot = self.get_metadata(index = index)
-
-        self.sprite = Sprite(np.array(start_pos), start_rot, self.track_offset)
-        self.sprite.initialize()
-
+    def __init__(self):
         # Road texture
         road_tex = pygame.image.load("./assets/road.jpg")
         road_tex = pygame.transform.scale(road_tex, (35, 35))
         road_tex.set_colorkey(TRANSPARENT)
 
-        if save:
+    def initialize_track(self, size, text_renderer = None, track_save = False, track_cache = False, filename = None):
+        self.size, self.track_offset = size, (np.mean(size) * 0.1).astype(int)
+        track_size = np.array(size) - self.track_offset * 2.0
+
+        if track_cache:
+            self.load_track_from_dict(filename)
+        else:
+            # Generate pivots
+            self.points, self.pivots = pivot_map_generate(32, *track_size)
+            self.noise_seed = np.random.randint(np.iinfo(np.int).max)
+
+            np.random.seed(seed = self.noise_seed)
+            self.noise_data = np.random.random(len(self.pivots) + 1) * 50.03
+
+            # Create the track and renderer, render to static surface
+            xi, yi = interpolated_map_generate(np.array(self.pivots), noise = self.noise_data)
+            self.track_data = np.array([xi, yi]).T
+
+        self.track_surface = render_track(size, self.pivots, self.points, self.track_data, self.track_offset,
+                                          text_renderer, track_line_render(320, 175))
+
+        if track_save:
             # Save track data for inference and model validation
             self.save_track_to_dict(filename = "track_model.npy" if filename is None else filename)
+
+    def initialize_sprite(self, index = 0):
+        # Create the sprite
+        start_pos, start_rot = self.get_metadata(index = index)
+
+        self.sprite = Sprite(np.array(start_pos), start_rot, self.track_offset)
+        self.sprite.initialize()
 
     def get_sprite_index(self, position, index):
         while True:
@@ -182,7 +189,7 @@ class Track:
 
     def render(self, screen, hint = True):
         # Render track
-        screen.blit(self.track, (0, 0))
+        screen.blit(self.track_surface, (0, 0))
 
         if hint:
             for pt in self.pts:
@@ -207,6 +214,17 @@ class Track:
 
         return params
 
+    def load_track_from_dict(self, filename):
+        """ Load track data from dict """
+
+        # load track data
+        track_dict = np.load("./models/" + filename).item()
+
+        assert(isinstance(track_dict, dict))
+
+        self.points, self.pivots, self.size, self.track_data = track_dict["points"], track_dict["pivots"], \
+            track_dict["size"], track_dict["data"]
+
     def save_track_to_dict(self, filename):
         """ Save track data internally """
 
@@ -215,6 +233,7 @@ class Track:
             'size': self.size,
             'points': self.points,
             'pivots': self.pivots,
+            'seed': self.noise_seed,
             'data': self.track_data
         }
 
@@ -372,17 +391,18 @@ def draw_line_aliased(surface, line, color, width = 1.0, length = None):
 
 
 def track_line_render(step, offset):
-    def renderer(screen, track_offset, xi, yi):
-        for index, (x1, y1) in enumerate(zip(xi, yi)):
-            ind = (index + 1) % len(xi)
+    def renderer(screen, track_offset, track_data):
+        pos2 = None
+        for index, pos1 in enumerate(track_data):
+            pos1 = pos1.copy() + track_offset
 
-            pos1 = np.array([x1, y1]) + track_offset
-            pos2 = np.array([xi[ind], yi[ind]]) + track_offset
+            if pos2 is not None:
+                draw_line_aliased(screen, [pos1, pos2], ROAD_TRACK, width = Track.WIDTH_MAX)
 
-            draw_line_aliased(screen, [pos1, pos2], ROAD_TRACK, width = Track.WIDTH_MAX)
+                if index % step > offset:
+                    draw_line_aliased(screen, [pos1, pos2], ROAD_HINT, width = 2, length = 4.0)
 
-            if index % step > offset:
-                draw_line_aliased(screen, [pos1, pos2], ROAD_HINT, width = 2, length = 4.0)
+            pos2 = pos1
 
     return renderer
 
@@ -402,12 +422,12 @@ def track_texture_render(texture):
     return renderer
 
 
-def render_track(size, pivots, points, xi, yi, track_offset, text_renderer, track_renderer, hints = False):
+def render_track(size, pivots, points, track_data, track_offset, text_renderer, track_renderer, hints = False):
     # Track surface
     track = pygame.Surface(size)
 
     # Render track
-    track_renderer(track, track_offset, xi, yi)
+    track_renderer(track, track_offset, track_data)
 
     # Render hints for track construction
     if hints:

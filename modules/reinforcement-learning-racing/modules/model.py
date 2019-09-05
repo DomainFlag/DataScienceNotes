@@ -249,12 +249,27 @@ class Agent:
             self.target.load_state_dict(self.policy.state_dict())
 
     def model_new_episode(self):
+        # Compute episode's reward
+        self.step_reward[-1] = self.memory.reward_acc / self.memory.reward_count
+        print(f"Episode reward: {self.step_reward[-1]:.5f}")
+
+        self.step_reward.append(0)
         self.episode += 1
 
-        self.step_reward[-1] = self.memory.reward_acc / self.memory.reward_count
-        self.step_reward.append(0)
-
         self.memory.reset_history()
+
+    def load_network_from_dict(self, filename):
+        """ Load a network from the dict """
+
+        # load network state
+        checkpoint = torch.load("./models/" + filename, map_location = self.device.type)
+
+        # assign parameters
+        self.policy.load_state_dict(checkpoint["state_model"])
+        self.target.load_state_dict(checkpoint["state_model"])
+        self.optimizer.load_state_dict(checkpoint["state_optimizer"])
+        self.episode = checkpoint["episode"]
+        self.step_loss = checkpoint["loss_history"]
 
     def save_network_to_dict(self, filename):
         """ Save a network to the dict """

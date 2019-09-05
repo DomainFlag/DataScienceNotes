@@ -91,7 +91,11 @@ def get_caption_renderer(window_active, clock = False):
     return renderer
 
 
-def racing_game(agent_active = True, episode_count = 25, frame_buffer = True):
+def racing_game(agent_active = True, agent_live = False, agent_file = "model.pt",
+                track_cache = False, track_save = True, track_file = "track_model.npy",
+                episode_count = 100, frame_buffer = True):
+    assert not (not agent_active and agent_live), "Live agent needs to be active"
+    assert not (track_cache and track_save), "The track is already cached locally"
 
     # Initialize pygame modules
     pygame.init()
@@ -123,7 +127,9 @@ def racing_game(agent_active = True, episode_count = 25, frame_buffer = True):
 
     # Create the environment
     track = Track()
-    track.initialize(SIZE, text_renderer, save = True)
+    track.initialize_track(SIZE, text_renderer, track_save = track_save, track_cache = track_cache,
+                           filename = track_file)
+    track.initialize_sprite()
 
     attenuation = 1.0
     if not agent_active:
@@ -135,6 +141,8 @@ def racing_game(agent_active = True, episode_count = 25, frame_buffer = True):
         action_space = np.array([Sprite.MOTION_SPACE_COUNT, Sprite.STEERING_SPACE_COUNT])
 
         agent = Agent(np.array(SIZE), action_space, rewarder)
+        if agent_live:
+            agent.load_network_from_dict(filename = agent_file)
 
     state, params = None, None
 
@@ -203,30 +211,35 @@ def racing_game(agent_active = True, episode_count = 25, frame_buffer = True):
             actions = agent.choose_actions(state)
             track.sprite.act_actions(actions)
 
-            # Create transition and update memory state
-            if state is not None:
-                reward = torch.FloatTensor([rewarder(params, params_next)]).to(agent.device)
-                actions_aligned = agent.reshape_actions(actions).to(agent.device)
+            if not agent_live:
+                # Create transition and update memory state
+                if state is not None:
+                    reward = torch.FloatTensor([rewarder(params, params_next)]).to(agent.device)
+                    actions_aligned = agent.reshape_actions(actions).to(agent.device)
 
-                transition = Transition(state, actions_aligned, state_next, reward)
-                agent.memory.push(transition)
+                    transition = Transition(state, actions_aligned, state_next, reward)
+                    agent.memory.push(transition)
 
-            # Optimize model
-            agent.optimize_model()
+                # Optimize model
+                agent.optimize_model()
 
-            # Caption parameters
-            caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
-                               agent.episode ]
+                if not params_next["alive"]:
+                    # Initialize the environment and state
+                    track.reset_track()
+                    agent.model_new_episode()
 
-            if not params_next["alive"]:
-                # Initialize the environment and state
-                track.reset_track()
-                agent.model_new_episode()
+                    state_next, params_next = None, None
 
-                state_next, params_next = None, None
+                    if agent.episode == episode_count:
+                        done = False
 
-                if agent.episode == episode_count:
-                    done = False
+                # Caption parameters
+                caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
+                                   agent.episode ]
+            else:
+                # Caption parameters
+                caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
+                                   -1 ]
 
             state, params = state_next, params_next
 
