@@ -34,6 +34,7 @@ class Track:
 
     static_params: dict = {
         "width_max": WIDTH_MAX,
+        "width_half": WIDTH_MAX // 2,
         "index_max": TRACK_PRECISION
     }
 
@@ -52,7 +53,7 @@ class Track:
         else:
             # Generate pivots
             self.points, self.pivots = pivot_map_generate(32, *track_size)
-            self.noise_seed = np.random.randint(np.iinfo(np.int).max)
+            self.noise_seed = np.random.randint(np.iinfo(np.int32).max)
 
             np.random.seed(seed = self.noise_seed)
             self.noise_data = np.random.random(len(self.pivots) + 1) * 50.03
@@ -168,23 +169,16 @@ class Track:
         self.sprite.act(scaling)
 
         index = self.get_sprite_index(self.sprite.position, self.index)
-        if abs(self.index - index) > Track.TRACK_OFFSET:
-            # The sprite is located between the start/end extremity
-            index_lower, index_upper = (index, self.index) if (self.index > index) else (self.index, index)
 
-            offset = index_lower - (index_upper - len(self.track_data))
-        else:
-            offset = index - self.index
-
-        self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
+        self.progress += Track.get_index_offset(self.index, index)
         self.index = index
-        self.progress += offset
+        self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
 
-        if self.progress >= len(self.track_data):
-            self.progress %= len(self.track_data)
+        if self.progress >= Track.TRACK_PRECISION:
+            self.progress %= Track.TRACK_PRECISION
             self.lap += 1
         elif self.progress < 0:
-            self.progress = len(self.track_data) + self.progress
+            self.progress = Track.TRACK_PRECISION + self.progress
             self.lap -= 1
 
     def render(self, screen, hint = True):
@@ -218,7 +212,7 @@ class Track:
         """ Load track data from dict """
 
         # load track data
-        track_dict = np.load("./models/" + filename).item()
+        track_dict = np.load("./models/" + filename, allow_pickle = True).item()
 
         assert(isinstance(track_dict, dict))
 
@@ -238,6 +232,20 @@ class Track:
         }
 
         np.save("./models/" + filename, track_dict)
+
+        print("Track saved successfully")
+
+    @staticmethod
+    def get_index_offset(index1, index2):
+        if abs(index1 - index2) > Track.TRACK_OFFSET:
+            # The sprite is located between the start/end extremity
+            index_lower, index_upper = (index2, index1) if (index1 > index2) else (index1, index2)
+
+            offset = index_lower - (index_upper - Track.TRACK_PRECISION)
+
+            return offset if index2 < Track.TRACK_OFFSET else -offset
+        else:
+            return index2 - index1
 
 
 def get_angle(p0, p1, p2):

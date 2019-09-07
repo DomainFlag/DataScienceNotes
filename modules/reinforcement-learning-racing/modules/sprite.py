@@ -13,8 +13,8 @@ class Sprite:
     MIN_VELOCITY: float = -1.92
 
     ACTION_SPACE_COUNT = 2
-    MOTION_SPACE_COUNT = 3
-    STEERING_SPACE_COUNT = 3
+    MOTION_SPACE_COUNT = 2
+    STEERING_SPACE_COUNT = 2
 
     acceleration: float = 0.025
     steering: float = 0.037
@@ -54,23 +54,21 @@ class Sprite:
 
         self.position += direction * self.velocity * scaling
 
-    def act_actions(self, actions):
-        if actions is None:
+    def act_actions(self, action):
+        if action is None:
             return None
 
-        assert(len(actions) == Sprite.ACTION_SPACE_COUNT)
+        motion, steering = 0., 0.
+        direction = 1 if action < 3 else -1 if action < 6 else 0
 
-        action_motion = actions[0]
-        if not action_motion == 2:
-            motion = Sprite.acceleration * (1.0 if action_motion == 0 else -1.0)
+        motion += Sprite.acceleration * direction
+        if action == 1 or action == 4:
+            steering += Sprite.steering
+        elif action == 2 or action == 5:
+            steering -= Sprite.steering
 
-            self.movement(motion)
-
-        action_steering = actions[1]
-        if not action_steering == 2:
-            steering = Sprite.steering * (1.0 if action_steering == 0 else -1.0)
-
-            self.rotation += steering
+        self.movement(motion)
+        self.rotation += steering
 
     def reset(self):
         self.velocity = 0.

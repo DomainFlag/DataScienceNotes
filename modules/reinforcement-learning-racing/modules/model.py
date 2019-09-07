@@ -67,7 +67,6 @@ class ReplayMemory:
     memory: List[Transition]
     position: int
     reward_acc: float = 0.
-    reward_count: int = 0
 
     def __init__(self, capacity: int = None):
         self.memory = []
@@ -82,8 +81,7 @@ class ReplayMemory:
             self.memory[self.position] = transition
 
         self.position = (self.position + 1) % self.capacity
-        self.reward_acc += transition[-1]
-        self.reward_count += 1
+        self.reward_acc += getattr(transition, "reward").item()
 
     def sample_batch_transition(self, batch_size, bagging = False) -> Optional[List[Transition]]:
         if not bagging or np.random.random() < ReplayMemory.bagging:
@@ -100,7 +98,7 @@ class ReplayMemory:
         return None
 
     def reset_history(self):
-        self.reward_acc, self.reward_count = 0., 0
+        self.reward_acc = 0.
 
     def __len__(self):
         return len(self.memory)
@@ -108,11 +106,11 @@ class ReplayMemory:
 
 class Agent:
 
-    BATCH_SIZE = 128
+    BATCH_SIZE = 64
     GAMMA = 0.999
     EPS_START = 0.9
     EPS_END = 0.05
-    EPS_DECAY = 200
+    EPS_DECAY = 500
     TARGET_UPDATE = 10
 
     multiple: bool = False
@@ -129,6 +127,7 @@ class Agent:
     step_reward: list = [0]
     step_loss_cur: float = 0.
     step_loss_min: float = np.inf
+    reward_max: float = 0.
 
     def __init__(self, size, action_pool, rewarder):
 
@@ -157,7 +156,10 @@ class Agent:
         if sample > eps_threshold:
             with torch.no_grad():
                 outputs = self.policy.forward(state.clone().to(self.device).unsqueeze(0)).squeeze(0)
-                actions = outputs.view(2, 3).max(1).indices
+                if self.multiple:
+                    actions = outputs.view(2, 3).max(1).indices
+                else:
+                    actions = outputs.max(0).indices
 
                 return actions
         else:
@@ -174,7 +176,10 @@ class Agent:
             else:
                 actions = np.random.rand(self.action_count).argmax()
 
-            return torch.LongTensor(actions).to(self.device)
+            if self.multiple:
+                return torch.LongTensor(actions).to(self.device)
+            else:
+                return torch.tensor(actions, dtype = torch.long).to(self.device)
 
     def reshape_actions(self, actions):
         if self.action_cum is not None:
@@ -192,7 +197,7 @@ class Agent:
 
             actions = np.array(values)
         else:
-            actions = actions.cpu().max(dim = 1).values
+            actions = actions.detach().max(1).values
 
         if tensor and not isinstance(actions, torch.Tensor):
             return torch.from_numpy(actions).to(self.device)
@@ -211,16 +216,16 @@ class Agent:
         reward_batch = torch.cat(transition_batch.reward)
 
         # Compute input (outputs_action_policy) - actions q values Q(s_t, a)
-        outputs_action_policy = self.policy.forward(state_batch).gather(1, action_batch).sum(dim = 1)
+        outputs_action_policy = self.policy.forward(state_batch).gather(1, action_batch.unsqueeze(1)).squeeze(1)
 
         # Compute target (outputs_action_target)
-        target = torch.zeros((Agent.BATCH_SIZE, 2), dtype = torch.float).to(self.device)
+        target = torch.zeros((Agent.BATCH_SIZE,), dtype = torch.float).to(self.device)
 
         state_mask = torch.tensor([ s is not None for s in transition_batch.next_state ], dtype = torch.uint8)
         state_non_final = torch.stack([ s for s in transition_batch.next_state if s is not None ]).clone().to(self.device)
 
         target[state_mask] = self.unpack_actions(self.target.forward(state_non_final))
-        outputs_action_target = reward_batch + (target.sum(dim = 1) * Agent.GAMMA)
+        outputs_action_target = reward_batch + (target * Agent.GAMMA)
 
         # Compute Huber loss
         loss = fc.smooth_l1_loss(outputs_action_policy, outputs_action_target)
@@ -228,6 +233,9 @@ class Agent:
         # Reset accumulated gradients and compute gradients
         self.optimizer.zero_grad()
         loss.backward()
+
+        for param in self.policy.parameters():
+            param.grad.data.clamp_(-1, 1)
 
         # Adjust weights
         self.optimizer.step()
@@ -238,7 +246,7 @@ class Agent:
             self.step_loss_cur = self.step_loss[-1] / self.step_every
             self.step_loss.append(0)
 
-            print(f"Episode: {self.episode}\tStep: {self.step // Agent.step_every}\tTraining Loss: {self.step_loss_cur:.6f}")
+            print(f"Step: {self.step // Agent.step_every}\tTraining Loss: {self.step_loss_cur:.6f}")
             if self.step_loss_cur < self.step_loss_min:
                 print(f"Loss decreased ({self.step_loss_min:.6f} --> {self.step_loss_cur:.6f}).  Saving model ...")
 
@@ -249,10 +257,14 @@ class Agent:
             self.target.load_state_dict(self.policy.state_dict())
 
     def model_new_episode(self):
-        # Compute episode's reward
-        self.step_reward[-1] = self.memory.reward_acc / self.memory.reward_count
-        print(f"Episode reward: {self.step_reward[-1]:.5f}")
+        print(f"\tEpisode {self.episode}\tReward: {self.memory.reward_acc:.5f}")
+        if self.memory.reward_acc > self.reward_max:
+            print(f"\tReward higher ({self.reward_max:.6f} --> {self.memory.reward_acc:.6f}).  Saving model ...")
 
+            self.save_network_to_dict("model_reward.pt")
+            self.reward_max = self.memory.reward_acc
+
+        self.step_reward[-1] = self.memory.reward_acc
         self.step_reward.append(0)
         self.episode += 1
 
