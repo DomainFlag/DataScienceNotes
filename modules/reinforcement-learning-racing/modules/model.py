@@ -3,6 +3,7 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as fc
+import torch.optim as optim
 
 from torch.optim.rmsprop import RMSprop
 from collections import namedtuple
@@ -60,7 +61,7 @@ class DQN(nn.Module):
 
 class ReplayMemory:
 
-    MEMORY_CAPACITY: int = 3000
+    MEMORY_CAPACITY: int = 10000
 
     bagging: float = 0.34
     capacity: int
@@ -107,12 +108,14 @@ class ReplayMemory:
 class Agent:
 
     BATCH_SIZE = 64
-    GAMMA = 0.999
+    GAMMA = 0.99
     EPS_START = 0.9
     EPS_END = 0.05
-    EPS_DECAY = 500
-    TARGET_UPDATE = 10
+    EPS_DECAY = 450
+    TARGET_UPDATE = 2e2
+    FRAME_GAP = 3
 
+    learning_rate = 1e-4
     multiple: bool = False
     action_count: int
     action_cum: Optional[torch.Tensor]
@@ -142,8 +145,9 @@ class Agent:
         self.policy = DQN(size, self.action_count).to(self.device)
         self.target = DQN(size, self.action_count).to(self.device)
         self.target.load_state_dict(self.policy.state_dict())
+        self.target.eval()
 
-        self.optimizer = RMSprop(self.policy.parameters())
+        self.optimizer = RMSprop(self.policy.parameters(), lr = self.learning_rate)
         self.memory = ReplayMemory()
 
     def choose_actions(self, state):
@@ -204,7 +208,7 @@ class Agent:
 
         return actions
 
-    def optimize_model(self):
+    def optimize_model(self, loss_tracking = False):
         if len(self.memory) < Agent.BATCH_SIZE:
             return
 
@@ -242,7 +246,7 @@ class Agent:
         self.step += 1
         self.step_loss[-1] += loss.item()
 
-        if self.step % Agent.step_every == 0:
+        if loss_tracking and self.step % Agent.step_every == 0:
             self.step_loss_cur = self.step_loss[-1] / self.step_every
             self.step_loss.append(0)
 
@@ -254,10 +258,11 @@ class Agent:
                 self.step_loss_min = self.step_loss_cur
 
         if self.step % Agent.TARGET_UPDATE == 0:
+            print(f"Step: {self.step // Agent.TARGET_UPDATE}\tUpdating the target net...")
             self.target.load_state_dict(self.policy.state_dict())
 
     def model_new_episode(self):
-        print(f"\tEpisode {self.episode}\tReward: {self.memory.reward_acc:.5f}")
+        print(f"Episode {self.episode}\tStep: {self.step // Agent.TARGET_UPDATE}\tReward: {self.memory.reward_acc:.5f}")
         if self.memory.reward_acc > self.reward_max:
             print(f"\tReward higher ({self.reward_max:.6f} --> {self.memory.reward_acc:.6f}).  Saving model ...")
 
@@ -282,6 +287,7 @@ class Agent:
         self.optimizer.load_state_dict(checkpoint["state_optimizer"])
         self.episode = checkpoint["episode"]
         self.step_loss = checkpoint["loss_history"]
+        self.step_reward = checkpoint["reward_history"]
 
     def save_network_to_dict(self, filename):
         """ Save a network to the dict """

@@ -113,7 +113,7 @@ class Track:
         if index < 0 or index >= len(self.track_data):
             raise Exception("Illegal index position")
 
-        curr_pos, next_pos = (self.track_data[index].copy(), self.track_data[index + offset].copy())
+        curr_pos, next_pos = (self.track_data[index].copy(), self.track_data[(index + offset) % len(self.track_data)].copy())
         next_pos = np.array(next_pos) - np.array(curr_pos)
         next_pos[-1] *= -1
 
@@ -131,19 +131,20 @@ class Track:
         self.sprite.position, self.sprite.rotation = start_pos, start_rot
         self.index, self.lap = 0, 0
 
-    def is_alive(self, state = None, precision = True):
+    def is_alive(self, state = None, centered = False, precision = True):
         if precision and state is not None:
-            position, size, rot = self.sprite.position.copy(), self.sprite.SPRITE_SIZE, self.sprite.rotation
-            position += self.track_offset - self.sprite.car_size_offset
+            size, rot = self.sprite.SPRITE_SIZE, self.sprite.rotation
+            if not centered:
+                position = self.sprite.get_position()
+            else:
+                position = np.array(state.size) / 2
 
-            for x in range(0, size[0]):
+            for x in [0, size[0]]:
                 for y in range(0, size[1]):
-                    coord = np.array([x, y]) - size / 2
-                    coord_rot = np.arctan2(coord[1], coord[0]) - rot
-                    coord = np.array([np.cos(coord_rot), np.sin(coord_rot)]) * np.sqrt(np.dot(coord, coord))
-                    coord += position + size / 2
+                    alive = self.check_alive(state, position, x, y, size, rot) and \
+                            self.check_alive(state, position, y, x, size, rot)
 
-                    if state.getpixel((int(coord[0]), int(coord[1]))) == BLACK:
+                    if not alive:
                         return False
 
             return True
@@ -194,14 +195,15 @@ class Track:
         # Render the sprites
         self.sprite.render(screen)
 
-    def get_params(self):
+    def get_params(self, state = None, centered = False):
         params = Track.static_params.copy()
         params.update({
             "width": self.width,
             "index": self.index,
             "lap": self.lap,
             "progress": (self.progress, self.progress / self.TRACK_PRECISION * 100),
-            "alive": self.is_alive()
+            "alive": self.is_alive(state, centered),
+            "angle": self.get_metadata(self.index, offset = 5)[-1]
         })
 
         params.update(self.sprite.get_params())
@@ -246,6 +248,18 @@ class Track:
             return offset if index2 < Track.TRACK_OFFSET else -offset
         else:
             return index2 - index1
+
+    @staticmethod
+    def check_alive(state, origin, x, y, size, rot):
+        coord = np.array([x, y]) - size / 2
+        coord_rot = np.arctan2(coord[1], coord[0]) - rot
+        coord = np.array([np.cos(coord_rot), np.sin(coord_rot)]) * np.sqrt(np.dot(coord, coord))
+        coord += origin + size / 2
+
+        if state.getpixel((int(coord[0]), int(coord[1]))) == BLACK:
+            return False
+
+        return True
 
 
 def get_angle(p0, p1, p2):
@@ -447,8 +461,5 @@ def render_track(size, pivots, points, track_data, track_offset, text_renderer, 
                 text_renderer(str(index), pivot + track_offset)
 
                 pygame.draw.circle(track, RED, pivot + track_offset, 5)
-
-    # # Optimize drawing
-    # track.convert()
 
     return track

@@ -59,13 +59,13 @@ class Sprite:
             return None
 
         motion, steering = 0., 0.
-        direction = 1 if action < 3 else -1 if action < 6 else 0
+        reverse = 1 if action < 3 else -1 if action < 6 else 0
 
-        motion += Sprite.acceleration * direction
+        motion += Sprite.acceleration * reverse
         if action == 1 or action == 4:
-            steering += Sprite.steering
+            steering = Sprite.steering
         elif action == 2 or action == 5:
-            steering -= Sprite.steering
+            steering = -Sprite.steering
 
         self.movement(motion)
         self.rotation += steering
@@ -73,6 +73,9 @@ class Sprite:
     def reset(self):
         self.velocity = 0.
         self.rotation = 0.
+
+    def get_position(self):
+        return self.position + self.offset - self.car_size_offset
 
     def render(self, screen):
         surf = pygame.transform.rotate(self.car_tex, (np.pi / 2.0) / np.pi * 180 + self.rotation / np.pi * 180)
@@ -82,7 +85,7 @@ class Sprite:
     def get_params(self):
         params = Sprite.static_params.copy()
         params.update({
-            "pos": self.position + self.offset - self.car_size_offset,
+            "pos": self.get_position(),
             "acc": self.velocity,
             "rot": self.rotation
         })

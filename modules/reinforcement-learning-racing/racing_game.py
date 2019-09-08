@@ -2,6 +2,7 @@ import pygame
 import numpy as np
 import os
 import torch
+import matplotlib.pyplot as plt
 
 from PIL import Image
 from modules import Track, Sprite, Agent, Transition
@@ -27,13 +28,22 @@ def create_text_renderer(screen):
     return text_render
 
 
-def create_snapshot(surface, filename: str = None, format = "PNG", save = False, raw = False, normalize = False, tensor = False):
+def create_snapshot(surface, size = None, center = None, filename: str = "screen.png", format = "PNG", save = False,
+                    raw = False, normalize = False, tensor = False):
     # Get image data
     data = pygame.surfarray.pixels3d(surface)
 
     # Preprocess the image
     image = Image.fromarray(np.rollaxis(data, 0, 1)[::-1, :, :], "RGB")
     image = image.rotate(270)
+    if size is not None and center is not None:
+        lu = np.maximum((center - size / 2), (0, 0))
+        rl = lu + size
+
+        image = image.crop(box = (*lu, *rl))
+
+    if save:
+        image.save("./snapshots/" + filename, format = format)
 
     if raw:
         raw_image = np.asarray(image)
@@ -44,15 +54,9 @@ def create_snapshot(surface, filename: str = None, format = "PNG", save = False,
             if normalize:
                 raw_image_tensor /= 255.
 
-            return raw_image_tensor
+            return raw_image_tensor, image
 
-        return raw_image
-
-    if save:
-        image.save("snapshots/" + filename, format = format)
-
-    # Clear resources
-    del data
+        return raw_image, image
 
     return image
 
@@ -70,23 +74,32 @@ def rewarder(prev_params: dict, curr_params: dict):
 
     reward = 0.
 
-    # Reward for greater motion
+    # Greater motion
     if curr_params["acc"] >= 0.0:
         reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"]) * 0.25
         if curr_params["acc"] <= prev_params["acc"]:
             reward_acc = reward_acc ** 2
     else:
-        reward_acc = -0.25
+        reward_acc = -2.0
 
-    # Reward for progress
+    # Progress
     if Track.get_index_offset(prev_params["index"], curr_params["index"]) > 0:
         reward += 0.75
     else:
-        reward -= 0.5
+        reward -= 2.0
 
-    # Reward for keeping center
+    # Direction
+    offset_abs_angle = abs(curr_params["angle"] - curr_params["rot"])
+    offset_angle = min(offset_abs_angle, abs(offset_abs_angle - np.pi * 2))
+    if offset_angle >= 0.3:
+        reward -= 0.75
+    else:
+        reward += 0.5
+
+    # Keep center
     width_offset = min(curr_params["width"], curr_params["width_half"])
-    reward_pos = smoothness(width_offset / curr_params["width_half"]) / 20.
+    track_center_offset = 1.0 - width_offset / curr_params["width_half"]
+    reward_pos = -0.5 if track_center_offset > 0.4 else 0.5
 
     # Acc reward + being alive
     reward += 0.2 + reward_acc + reward_pos
@@ -107,15 +120,24 @@ def get_caption_renderer(window_active, clock = False):
     return renderer
 
 
-def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_file = "model.pt",
-                track_cache = True, track_save = False, track_file = "track_model.npy",
-                episode_count = 125, frame_buffer = True):
+def render_reward_(rewards):
+    plt.plot(np.arange(0, len(rewards)), rewards)
+    plt.title('Reward')
+    plt.show()
+
+
+def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_interactive = False,
+                agent_file = "model_reward.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
+                frame_size = (200, 200), episode_count = 300, frame_buffer = True):
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
 
     # Set full screen centered and hint audio for dsp instead of als
     os.environ['SDL_VIDEO_CENTERED'] = '1'
     os.environ['SDL_AUDIODRIVER'] = 'dsp'
+
+    # Setting default frame size
+    frame_size = np.array(frame_size) if frame_size is not None else np.array(SIZE)
 
     # Initialize pygame modules
     pygame.init()
@@ -157,17 +179,18 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
         # Set up the agent
         action_space = Sprite.ACTION_SPACE_COUNT + Sprite.MOTION_SPACE_COUNT * Sprite.STEERING_SPACE_COUNT + 1
 
-        agent = Agent(np.array(SIZE), action_space, rewarder)
+        agent = Agent(frame_size, action_space, rewarder)
         if agent_cache:
             agent.load_network_from_dict(filename = agent_file)
 
-    state, params = None, None
+            if agent_interactive:
+                render_reward_(agent.step_reward)
 
+    state, params = None, None
     while not done:
 
         # Event queue while window is active
         if not frame_buffer:
-
             if not agent_active:
                 # Continuous key press
                 keys = pygame.key.get_pressed()
@@ -210,19 +233,21 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
             # Update the screen
             pygame.display.flip()
 
-        params_next = track.get_params()
         if not agent_active:
             # Compute rendering time
             curr_time = pygame.time.get_ticks()
             attenuation, prev_time = (curr_time - prev_time) / (1000 / FPS_CAP), curr_time
 
             # Handle constant FPS cap
+            params_next = track.get_params()
             caption_params = [ TITLE, clock.get_fps(), params_next["index"], params_next["progress"][1],
                                params_next["lap"] ]
 
             clock.tick(FPS_CAP)
         else:
-            state_next = create_snapshot(surface, raw = True, tensor = True, normalize = True)
+            state_next, state_img = create_snapshot(surface, size = frame_size, center = track.sprite.get_position(), raw = True,
+                                         tensor = True, normalize = True, save = False)
+            params_next = track.get_params(state = state_img, centered = True)
 
             # Generate actions
             actions = agent.choose_actions(state)
@@ -240,19 +265,19 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
                 # Optimize model
                 agent.optimize_model()
 
-                # Caption parameters
-                caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
-                                   agent.episode ]
+            # Caption parameters
+            caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
+                               agent.episode ]
 
-                if not params_next["alive"]:
-                    # Initialize the environment and state
-                    track.reset_track()
-                    agent.model_new_episode()
+            if not params_next["alive"]:
+                # Initialize the environment and state
+                track.reset_track()
+                agent.model_new_episode()
 
-                    state_next, params_next = None, None
+                state_next, params_next = None, None
 
-                    if agent.episode == episode_count:
-                        done = False
+                if agent.episode >= episode_count:
+                    done = True
             else:
                 # Caption parameters
                 caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
