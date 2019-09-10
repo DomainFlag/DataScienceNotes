@@ -9,6 +9,7 @@ from modules import Sprite
 BLACK = (0, 0, 0)
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
+YELLOW = (255, 255, 0)
 WHITE = (255, 255, 255)
 TRANSPARENT = (0, 0, 0, 0)
 
@@ -106,7 +107,7 @@ class Track:
     def get_track_position(self, index):
         return self.track_data[index].copy()
 
-    def get_metadata(self, index = 0, offset = 100):
+    def get_metadata(self, index = 0, offset = 25):
         if self.track_data is None or len(self.track_data) == 0:
             raise Exception("Illegal parameters")
 
@@ -123,13 +124,16 @@ class Track:
 
         return curr_pos, angle
 
-    def reset_track(self):
+    def reset_track(self, random_reset = False):
         # Reset the sprite
         self.sprite.reset()
 
-        start_pos, start_rot = self.get_metadata(index = 0)
+        # Random reset position
+        index = 0 if not random_reset else np.random.randint(len(self.track_data))
+
+        start_pos, start_rot = self.get_metadata(index = index)
         self.sprite.position, self.sprite.rotation = start_pos, start_rot
-        self.index, self.lap = 0, 0
+        self.index, self.lap = index, 0
 
     def is_alive(self, state = None, centered = False, precision = True):
         if precision and state is not None:
@@ -182,11 +186,16 @@ class Track:
             self.progress = Track.TRACK_PRECISION + self.progress
             self.lap -= 1
 
-    def render(self, screen, hint = True):
+    def render(self, screen, direction_offset = 200, hint_direction = True, hint_boundary = False):
         # Render track
         screen.blit(self.track_surface, (0, 0))
 
-        if hint:
+        if hint_direction:
+            position_hint = self.track_data[(self.index + direction_offset) % len(self.track_data)] + self.track_offset
+
+            pygame.draw.circle(screen, YELLOW, position_hint.astype(int), 3)
+
+        if hint_boundary:
             for pt in self.pts:
                 pygame.draw.circle(screen, GREEN, (pt + self.track_offset).astype(int), 1)
 

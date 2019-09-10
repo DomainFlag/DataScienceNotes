@@ -5,7 +5,7 @@ import torch
 import matplotlib.pyplot as plt
 
 from PIL import Image
-from modules import Track, Sprite, Agent, Transition
+from modules import Track, Sprite, Agent, Transition, State
 
 TITLE = "RL racer"
 SIZE = [500, 500]
@@ -68,37 +68,37 @@ def smoothness(x):
     return np.log(x + 1.0) / np.log(2)
 
 
-def rewarder(prev_params: dict, curr_params: dict):
-    if not curr_params["alive"]:
+def rewarder(prev_params: dict, params: dict) -> float:
+    if not params["alive"]:
         return -1.0
 
     reward = 0.
 
     # Greater motion
-    if curr_params["acc"] >= 0.0:
-        reward_acc = smoothness(curr_params["acc"] / curr_params["acc_max"]) * 0.25
-        if curr_params["acc"] <= prev_params["acc"]:
+    if params["acc"] >= 0.0:
+        reward_acc = smoothness(params["acc"] / params["acc_max"]) * 0.25
+        if params["acc"] <= prev_params["acc"]:
             reward_acc = reward_acc ** 2
     else:
         reward_acc = -2.0
 
     # Progress
-    if Track.get_index_offset(prev_params["index"], curr_params["index"]) > 0:
+    if Track.get_index_offset(prev_params["index"], params["index"]) > 0:
         reward += 0.75
     else:
         reward -= 2.0
 
     # Direction
-    offset_abs_angle = abs(curr_params["angle"] - curr_params["rot"])
+    offset_abs_angle = abs(params["angle"] - params["rot"])
     offset_angle = min(offset_abs_angle, abs(offset_abs_angle - np.pi * 2))
-    if offset_angle >= 0.3:
+    if offset_angle >= 0.35:
         reward -= 0.75
     else:
         reward += 0.5
 
     # Keep center
-    width_offset = min(curr_params["width"], curr_params["width_half"])
-    track_center_offset = 1.0 - width_offset / curr_params["width_half"]
+    width_offset = min(params["width"], params["width_half"])
+    track_center_offset = 1.0 - width_offset / params["width_half"]
     reward_pos = -0.5 if track_center_offset > 0.4 else 0.5
 
     # Acc reward + being alive
@@ -126,9 +126,10 @@ def render_reward_(rewards):
     plt.show()
 
 
-def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_interactive = False,
-                agent_file = "model_reward.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
-                frame_size = (200, 200), episode_count = 300, frame_buffer = True):
+def racing_game(agent_active = True, agent_live = True, agent_cache = True, agent_interactive = True,
+                agent_file = "model.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
+                frame_size = (200, 200), frame_discontinuity = 1, episode_count = 750, frame_buffer = False,
+                state_seq_size = 3, state_seq_discontinuity = 2, random_reset = True):
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
 
@@ -177,7 +178,7 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
         prev_time = pygame.time.get_ticks()
     else:
         # Set up the agent
-        action_space = Sprite.ACTION_SPACE_COUNT + Sprite.MOTION_SPACE_COUNT * Sprite.STEERING_SPACE_COUNT + 1
+        action_space = Sprite.ACTION_SPACE_COUNT * Sprite.MOTION_SPACE_COUNT * Sprite.STEERING_SPACE_COUNT + 1
 
         agent = Agent(frame_size, action_space, rewarder)
         if agent_cache:
@@ -186,7 +187,8 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
             if agent_interactive:
                 render_reward_(agent.step_reward)
 
-    state, params = None, None
+    state_seq, params = State(state_seq_size, state_seq_discontinuity), None
+    counter = 0
     while not done:
 
         # Event queue while window is active
@@ -223,10 +225,8 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
         # Clear the screen and set the screen background
         screen.fill(CLEAR_SCREEN)
 
-        # Environment act
+        # Environment act and render
         track.act(attenuation)
-
-        # Render environment
         track.render(screen)
 
         if not frame_buffer:
@@ -245,46 +245,48 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
 
             clock.tick(FPS_CAP)
         else:
-            state_next, state_img = create_snapshot(surface, size = frame_size, center = track.sprite.get_position(), raw = True,
+            # Generate env states
+            state, img = create_snapshot(surface, size = frame_size, center = track.sprite.get_position(), raw = True,
                                          tensor = True, normalize = True, save = False)
-            params_next = track.get_params(state = state_img, centered = True)
 
-            # Generate actions
-            actions = agent.choose_actions(state)
-            track.sprite.act_actions(actions)
+            # Env parameters
+            params = track.get_params(state = img, centered = True)
+            caption_params = [ TITLE, params["index"], params["progress"][1], params["lap"], agent.episode ]
 
-            if not agent_live:
-                # Create transition and update memory state
-                if state is not None:
-                    reward = torch.FloatTensor([rewarder(params, params_next)]).to(agent.device)
-                    actions_aligned = agent.reshape_actions(actions).to(agent.device)
+            flag = state_seq.push(state, params)
+            if flag == 1:
+                # Generate actions
+                actions = agent.choose_actions(torch.stack(state_seq.state_seq_prev))
+                track.sprite.act_actions(actions)
 
-                    transition = Transition(state, actions_aligned, state_next, reward)
-                    agent.memory.push(transition)
+                state_seq.register(actions)
 
-                # Optimize model
+            # Create transition and update memory state
+            if not agent_live and flag == 2:
+                reward = torch.FloatTensor([ rewarder(state_seq.prev_params, state_seq.params) ]).to(agent.device)
+                actions_aligned = agent.reshape_actions(state_seq.actions).to(agent.device)
+
+                transition = Transition(torch.stack(state_seq.state_seq_prev), actions_aligned,
+                                        torch.stack(state_seq.state_seq_prev + state_seq.state_seq), reward)
+
+                # Update memory and optimize
+                agent.memory.push(transition)
                 agent.optimize_model()
 
-            # Caption parameters
-            caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
-                               agent.episode ]
+            if flag == 2:
+                state_seq.reset()
 
-            if not params_next["alive"]:
-                # Initialize the environment and state
-                track.reset_track()
-                agent.model_new_episode()
+            # Reset environment and state
+            if not params["alive"]:
+                track.reset_track(random_reset = random_reset)
+                state_seq.reset()
 
-                state_next, params_next = None, None
+                if not agent_live:
+                    agent.model_new_episode()
+                    if agent.episode >= episode_count:
+                        done = True
 
-                if agent.episode >= episode_count:
-                    done = True
-            else:
-                # Caption parameters
-                caption_params = [ TITLE, params_next["index"], params_next["progress"][1], params_next["lap"],
-                                   -1 ]
-
-            state, params = state_next, params_next
-
+        counter += 1
         caption_renderer(caption_params)
 
     # Be IDLE friendly

@@ -16,11 +16,13 @@ class DQN(nn.Module):
 
     size: np.ndarray
     actions_count: int
+    batch_size: int
 
-    def __init__(self, size: np.ndarray, actions_count: int):
+    def __init__(self, size: np.ndarray, actions_count: int, hidden_size = 768):
         super(DQN, self).__init__()
 
         self.size, self.actions_count = size, actions_count
+        self.hidden_size = hidden_size
 
         self.sec1 = nn.Sequential(
             nn.Conv2d(3, 16, kernel_size = 3, stride = 2, padding = 1),
@@ -48,20 +50,32 @@ class DQN(nn.Module):
             _, conv = next(iter), next(iter)
 
             features = (features + np.array(conv.padding) * 2 - (np.array(conv.kernel_size) - 1) - 1) \
-                       // np.array(conv.stride) + 1
+                // np.array(conv.stride) + 1
 
-        self.ln = nn.Linear(features[0] * features[1] * conv.out_channels, actions_count)
+        input_size = int(features[0] * features[1] * conv.out_channels)
+
+        self.rnn = nn.LSTM(input_size = input_size, hidden_size = self.hidden_size, num_layers = 3,
+                           batch_first = True, bidirectional = False)
+        self.ln = nn.Linear(self.hidden_size, actions_count)
 
     def forward(self, inputs):
+        batch_size, seq_size = inputs.size(0), inputs.size(1)
+
+        # BxSxCxHxW => BSxCxHxW
+        inputs = inputs.view(-1, *inputs.shape[-3:])
         for sec in self.pipeline:
             inputs = sec.forward(inputs)
 
-        return self.ln(inputs.view(inputs.size(0), -1))
+        # BSxCxHxW => BxSxI
+        inputs, _ = self.rnn(inputs.view(batch_size, seq_size, -1))
+
+        # BxSxI => BxI | S[-1]
+        return self.ln(inputs)[:, -1, :]
 
 
 class ReplayMemory:
 
-    MEMORY_CAPACITY: int = 10000
+    MEMORY_CAPACITY: int = 1500
 
     bagging: float = 0.34
     capacity: int
@@ -105,17 +119,51 @@ class ReplayMemory:
         return len(self.memory)
 
 
+class State:
+
+    prev_params: Optional[dict] = None
+    params: Optional[dict] = None
+    state_seq_prev: List = []
+    state_seq: List = []
+    actions = None
+
+    def __init__(self, seq_size: int, seq_discontinuity: int):
+        self.seq_size = seq_size
+        self.seq_discontinuity = seq_discontinuity
+
+    def push(self, state, params) -> int:
+        if len(self.state_seq_prev) < self.seq_size:
+            self.state_seq_prev.append(state)
+            self.prev_params, self.params = self.params, params
+
+            if len(self.state_seq_prev) == self.seq_size:
+                return 1
+        elif len(self.state_seq) < self.seq_discontinuity:
+            self.state_seq.append(state)
+            self.params = params
+        else:
+            return 2
+
+        return 0
+
+    def register(self, actions):
+        self.actions = actions
+
+    def reset(self):
+        self.prev_params, self.params = None, None
+        self.state_seq_prev, self.state_seq = [], []
+
+
 class Agent:
 
-    BATCH_SIZE = 64
+    BATCH_SIZE = 32
     GAMMA = 0.99
     EPS_START = 0.9
     EPS_END = 0.05
     EPS_DECAY = 450
     TARGET_UPDATE = 2e2
-    FRAME_GAP = 3
 
-    learning_rate = 1e-4
+    learning_rate = 2e-3
     multiple: bool = False
     action_count: int
     action_cum: Optional[torch.Tensor]
@@ -125,7 +173,7 @@ class Agent:
     rewarder: Callable
     episode: int = 0
     step: int = 0
-    step_every: int = 50
+    step_every: int = 35
     step_loss: list = [0]
     step_reward: list = [0]
     step_loss_cur: float = 0.
@@ -150,8 +198,8 @@ class Agent:
         self.optimizer = RMSprop(self.policy.parameters(), lr = self.learning_rate)
         self.memory = ReplayMemory()
 
-    def choose_actions(self, state):
-        if state is None:
+    def choose_actions(self, state_seq):
+        if state_seq is None:
             return None
 
         sample = random.random()
@@ -159,7 +207,7 @@ class Agent:
 
         if sample > eps_threshold:
             with torch.no_grad():
-                outputs = self.policy.forward(state.clone().to(self.device).unsqueeze(0)).squeeze(0)
+                outputs = self.policy.forward(state_seq.clone().to(self.device).unsqueeze(0)).squeeze(0)
                 if self.multiple:
                     actions = outputs.view(2, 3).max(1).indices
                 else:
@@ -262,11 +310,11 @@ class Agent:
             self.target.load_state_dict(self.policy.state_dict())
 
     def model_new_episode(self):
-        print(f"Episode {self.episode}\tStep: {self.step // Agent.TARGET_UPDATE}\tReward: {self.memory.reward_acc:.5f}")
+        print(f"Episode {self.episode}\tStep: {int(self.step // Agent.TARGET_UPDATE)}\tReward: {self.memory.reward_acc:.5f}")
         if self.memory.reward_acc > self.reward_max:
             print(f"\tReward higher ({self.reward_max:.6f} --> {self.memory.reward_acc:.6f}).  Saving model ...")
 
-            self.save_network_to_dict("model_reward.pt")
+            self.save_network_to_dict("model.pt")
             self.reward_max = self.memory.reward_acc
 
         self.step_reward[-1] = self.memory.reward_acc

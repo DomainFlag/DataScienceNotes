@@ -59,13 +59,17 @@ class Sprite:
             return None
 
         motion, steering = 0., 0.
-        reverse = 1 if action < 3 else -1 if action < 6 else 0
+        if action in [0, 4, 5]:
+            motion += Sprite.acceleration
 
-        motion += Sprite.acceleration * reverse
-        if action == 1 or action == 4:
-            steering = Sprite.steering
-        elif action == 2 or action == 5:
-            steering = -Sprite.steering
+        if action in [1, 6, 7]:
+            motion -= Sprite.acceleration
+
+        if action in [3, 5, 7]:
+            steering -= Sprite.steering
+
+        if action in [2, 4, 6]:
+            steering += Sprite.steering
 
         self.movement(motion)
         self.rotation += steering
