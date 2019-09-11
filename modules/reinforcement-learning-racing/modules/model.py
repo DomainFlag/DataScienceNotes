@@ -2,10 +2,9 @@ import numpy as np
 import random
 import torch
 import torch.nn as nn
-import torch.nn.functional as fc
+import torch.nn.functional as F
 import torch.optim as optim
 
-from torch.optim.rmsprop import RMSprop
 from collections import namedtuple
 from typing import List, Callable, Optional, Any
 
@@ -18,26 +17,26 @@ class DQN(nn.Module):
     actions_count: int
     batch_size: int
 
-    def __init__(self, size: np.ndarray, actions_count: int, hidden_size = 768):
+    def __init__(self, size: np.ndarray, actions_count: int, hidden_size = 768, num_layers = 2):
         super(DQN, self).__init__()
 
         self.size, self.actions_count = size, actions_count
-        self.hidden_size = hidden_size
+        self.hidden_size, self.num_layers = hidden_size, num_layers
 
         self.sec1 = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size = 3, stride = 2, padding = 1),
+            nn.Conv2d(3, 16, kernel_size = 5, stride = 2, padding = 1),
             nn.BatchNorm2d(16),
             nn.ReLU()
         )
 
         self.sec2 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size = 3, stride = 2, padding = 1),
+            nn.Conv2d(16, 32, kernel_size = 5, stride = 2, padding = 1),
             nn.BatchNorm2d(32),
             nn.ReLU()
         )
 
         self.sec3 = nn.Sequential(
-            nn.Conv2d(32, 32, kernel_size = 5, stride = 2, padding = 2),
+            nn.Conv2d(32, 32, kernel_size = 3, stride = 2, padding = 2),
             nn.BatchNorm2d(32),
             nn.ReLU()
         )
@@ -53,8 +52,7 @@ class DQN(nn.Module):
                 // np.array(conv.stride) + 1
 
         input_size = int(features[0] * features[1] * conv.out_channels)
-
-        self.rnn = nn.LSTM(input_size = input_size, hidden_size = self.hidden_size, num_layers = 3,
+        self.rnn = nn.LSTM(input_size = input_size, hidden_size = self.hidden_size, num_layers = self.num_layers,
                            batch_first = True, bidirectional = False)
         self.ln = nn.Linear(self.hidden_size, actions_count)
 
@@ -75,7 +73,7 @@ class DQN(nn.Module):
 
 class ReplayMemory:
 
-    MEMORY_CAPACITY: int = 1500
+    MEMORY_CAPACITY: int = 1000
 
     bagging: float = 0.34
     capacity: int
@@ -134,7 +132,7 @@ class State:
     def push(self, state, params) -> int:
         if len(self.state_seq_prev) < self.seq_size:
             self.state_seq_prev.append(state)
-            self.prev_params, self.params = self.params, params
+            self.prev_params = params
 
             if len(self.state_seq_prev) == self.seq_size:
                 return 1
@@ -149,6 +147,11 @@ class State:
     def register(self, actions):
         self.actions = actions
 
+    def swap(self):
+        self.prev_params, self.params = self.params, None
+        self.state_seq_prev, self.state_seq = self.state_seq.copy(), []
+        self.actions = None
+
     def reset(self):
         self.prev_params, self.params = None, None
         self.state_seq_prev, self.state_seq = [], []
@@ -160,10 +163,10 @@ class Agent:
     GAMMA = 0.99
     EPS_START = 0.9
     EPS_END = 0.05
-    EPS_DECAY = 450
-    TARGET_UPDATE = 2e2
+    EPS_DECAY = 240
+    TARGET_UPDATE = 5e2
 
-    learning_rate = 2e-3
+    learning_rate = 4e-3
     multiple: bool = False
     action_count: int
     action_cum: Optional[torch.Tensor]
@@ -171,12 +174,15 @@ class Agent:
     size: int
     action_pool: Any
     rewarder: Callable
+
     episode: int = 0
+    episode_step: int = 0
+    episode_step_every: int = 15
+
     step: int = 0
     step_every: int = 35
     step_loss: list = [0]
     step_reward: list = [0]
-    step_loss_cur: float = 0.
     step_loss_min: float = np.inf
     reward_max: float = 0.
 
@@ -184,6 +190,7 @@ class Agent:
 
         self.size, self.action_pool, self.rewarder = size, action_pool, rewarder
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Current available device is {self.device.type}")
 
         self.multiple = isinstance(action_pool, (list, np.ndarray))
         self.action_count = action_pool if not self.multiple else np.sum(action_pool)
@@ -193,19 +200,18 @@ class Agent:
         self.policy = DQN(size, self.action_count).to(self.device)
         self.target = DQN(size, self.action_count).to(self.device)
         self.target.load_state_dict(self.policy.state_dict())
-        self.target.eval()
 
-        self.optimizer = RMSprop(self.policy.parameters(), lr = self.learning_rate)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr = self.learning_rate)
         self.memory = ReplayMemory()
 
-    def choose_actions(self, state_seq):
+    def choose_actions(self, state_seq, agent_live = False):
         if state_seq is None:
             return None
 
         sample = random.random()
         eps_threshold = Agent.EPS_END + (Agent.EPS_START - Agent.EPS_END) * np.exp(-1. * self.step / Agent.EPS_DECAY)
 
-        if sample > eps_threshold:
+        if sample < eps_threshold or agent_live:
             with torch.no_grad():
                 outputs = self.policy.forward(state_seq.clone().to(self.device).unsqueeze(0)).squeeze(0)
                 if self.multiple:
@@ -273,17 +279,18 @@ class Agent:
         # Compute target (outputs_action_target)
         target = torch.zeros((Agent.BATCH_SIZE,), dtype = torch.float).to(self.device)
 
-        state_mask = torch.tensor([ s is not None for s in transition_batch.next_state ], dtype = torch.uint8)
+        state_mask = torch.tensor([ s is not None for s in transition_batch.next_state ], dtype = torch.bool)
         state_non_final = torch.stack([ s for s in transition_batch.next_state if s is not None ]).clone().to(self.device)
 
         target[state_mask] = self.unpack_actions(self.target.forward(state_non_final))
         outputs_action_target = reward_batch + (target * Agent.GAMMA)
 
         # Compute Huber loss
-        loss = fc.smooth_l1_loss(outputs_action_policy, outputs_action_target)
+        loss = F.smooth_l1_loss(outputs_action_policy, outputs_action_target)
 
         # Reset accumulated gradients and compute gradients
         self.optimizer.zero_grad()
+
         loss.backward()
 
         for param in self.policy.parameters():
@@ -291,26 +298,32 @@ class Agent:
 
         # Adjust weights
         self.optimizer.step()
+
         self.step += 1
+        self.episode_step += 1
         self.step_loss[-1] += loss.item()
 
+        if self.episode_step % Agent.episode_step_every == 0:
+            print(f"\tStep: {self.episode_step}\tReward{self.memory.reward_acc}")
+
         if loss_tracking and self.step % Agent.step_every == 0:
-            self.step_loss_cur = self.step_loss[-1] / self.step_every
+            step_loss_cur = self.step_loss[-1] / self.step_every
             self.step_loss.append(0)
 
-            print(f"Step: {self.step // Agent.step_every}\tTraining Loss: {self.step_loss_cur:.6f}")
-            if self.step_loss_cur < self.step_loss_min:
-                print(f"Loss decreased ({self.step_loss_min:.6f} --> {self.step_loss_cur:.6f}).  Saving model ...")
+            print(f"Step: {self.step // Agent.step_every}\tTraining Loss: {step_loss_cur:.6f}")
+            if step_loss_cur < self.step_loss_min:
+                print(f"Loss decreased ({self.step_loss_min:.6f} --> {step_loss_cur:.6f}).  Saving model ...")
 
                 self.save_network_to_dict("model.pt")
-                self.step_loss_min = self.step_loss_cur
+                self.step_loss_min = step_loss_cur
 
         if self.step % Agent.TARGET_UPDATE == 0:
-            print(f"Step: {self.step // Agent.TARGET_UPDATE}\tUpdating the target net...")
+            print(f"Step: {int(self.step // Agent.TARGET_UPDATE)}\tUpdating the target net...")
             self.target.load_state_dict(self.policy.state_dict())
 
-    def model_new_episode(self):
-        print(f"Episode {self.episode}\tStep: {int(self.step // Agent.TARGET_UPDATE)}\tReward: {self.memory.reward_acc:.5f}")
+    def model_new_episode(self, progress):
+        print(f"Episode {self.episode}\tStep: {int(self.step // Agent.TARGET_UPDATE)}\tReward: "
+              f"{self.memory.reward_acc:.5f} and progress: {progress}")
         if self.memory.reward_acc > self.reward_max:
             print(f"\tReward higher ({self.reward_max:.6f} --> {self.memory.reward_acc:.6f}).  Saving model ...")
 
@@ -320,6 +333,7 @@ class Agent:
         self.step_reward[-1] = self.memory.reward_acc
         self.step_reward.append(0)
         self.episode += 1
+        self.episode_step = 0
 
         self.memory.reset_history()
 
@@ -346,7 +360,7 @@ class Agent:
             'loss_history': self.step_loss,
             'loss_model': self.step_loss[-1] / Agent.step_every,
             'reward_history': self.step_reward,
-            'state_model': self.target.state_dict(),
+            'state_model': self.policy.state_dict(),
             'state_optimizer': self.optimizer.state_dict()
         }
 

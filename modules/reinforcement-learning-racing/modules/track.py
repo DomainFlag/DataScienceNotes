@@ -30,6 +30,7 @@ class Track:
     pts: list
     lap: int = 0
     width: float = 0.
+    start_index: int = -1
     index: int = 0
     progress: int = 0
 
@@ -71,6 +72,8 @@ class Track:
             self.save_track_to_dict(filename = "track_model.npy" if filename is None else filename)
 
     def initialize_sprite(self, index = 0):
+        self.start_index = index
+
         # Create the sprite
         start_pos, start_rot = self.get_metadata(index = index)
 
@@ -129,11 +132,12 @@ class Track:
         self.sprite.reset()
 
         # Random reset position
-        index = 0 if not random_reset else np.random.randint(len(self.track_data))
+        self.start_index = 0 if not random_reset else np.random.randint(len(self.track_data))
 
-        start_pos, start_rot = self.get_metadata(index = index)
+        start_pos, start_rot = self.get_metadata(index = self.start_index)
         self.sprite.position, self.sprite.rotation = start_pos, start_rot
-        self.index, self.lap = index, 0
+        self.index, self.lap = self.start_index, 0
+        self.progress = 0
 
     def is_alive(self, state = None, centered = False, precision = True):
         if precision and state is not None:
@@ -209,6 +213,7 @@ class Track:
         params.update({
             "width": self.width,
             "index": self.index,
+            "start_index": self.start_index,
             "lap": self.lap,
             "progress": (self.progress, self.progress / self.TRACK_PRECISION * 100),
             "alive": self.is_alive(state, centered),

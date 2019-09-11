@@ -9,7 +9,7 @@ class Sprite:
 
     SPRITE_SIZE: np.ndarray = np.array([25, 25])
 
-    MAX_VELOCITY: float = 3.45
+    MAX_VELOCITY: float = 2.45
     MIN_VELOCITY: float = -1.92
 
     ACTION_SPACE_COUNT = 2
@@ -41,6 +41,14 @@ class Sprite:
         self.car_size = np.array(self.car_tex.get_rect().size)
         self.car_size_offset = self.car_size / 2
 
+    def steer(self, steering):
+        self.rotation += steering
+
+        if self.rotation >= 2 * np.pi:
+            self.rotation -= 2 * np.pi
+        elif self.rotation < 0:
+            self.rotation = 2 * np.pi + self.rotation
+
     def movement(self, acceleration):
         self.velocity += acceleration
 
@@ -65,14 +73,14 @@ class Sprite:
         if action in [1, 6, 7]:
             motion -= Sprite.acceleration
 
-        if action in [3, 5, 7]:
-            steering -= Sprite.steering
-
         if action in [2, 4, 6]:
             steering += Sprite.steering
 
+        if action in [3, 5, 7]:
+            steering -= Sprite.steering
+
         self.movement(motion)
-        self.rotation += steering
+        self.steer(steering)
 
     def reset(self):
         self.velocity = 0.

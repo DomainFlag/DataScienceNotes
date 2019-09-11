@@ -37,7 +37,7 @@ def create_snapshot(surface, size = None, center = None, filename: str = "screen
     image = Image.fromarray(np.rollaxis(data, 0, 1)[::-1, :, :], "RGB")
     image = image.rotate(270)
     if size is not None and center is not None:
-        lu = np.maximum((center - size / 2), (0, 0))
+        lu = np.maximum((center - size / 2).astype(int), (0, 0))
         rl = lu + size
 
         image = image.crop(box = (*lu, *rl))
@@ -47,10 +47,8 @@ def create_snapshot(surface, size = None, center = None, filename: str = "screen
 
     if raw:
         raw_image = np.asarray(image)
-
         if tensor:
             raw_image_tensor = torch.FloatTensor(raw_image).transpose(1, 2).transpose(0, 1)
-
             if normalize:
                 raw_image_tensor /= 255.
 
@@ -65,44 +63,58 @@ def smoothness(x):
     """ X value is expected to be normalized - [0, 1] """
     assert 0.0 <= x <= 1.0, "x < 0 or x > 1.0, x - %s" % (x,)
 
-    return np.log(x + 1.0) / np.log(2)
+    return (np.log(x + 1.0) / np.log(2)) ** (1 / 2)
+
+
+def compute_min_offset(a, b, cycle):
+    offset_abs = abs(a - b)
+
+    return min(offset_abs, abs(offset_abs - cycle))
 
 
 def rewarder(prev_params: dict, params: dict) -> float:
     if not params["alive"]:
-        return -1.0
+        return -2.0
 
     reward = 0.
 
     # Greater motion
-    if params["acc"] >= 0.0:
-        reward_acc = smoothness(params["acc"] / params["acc_max"]) * 0.25
+    if params["acc"] > 0.0:
+        reward_acc = smoothness(params["acc"] / params["acc_max"]) * 2.0
         if params["acc"] <= prev_params["acc"]:
             reward_acc = reward_acc ** 2
+    elif params["acc"] == 0.:
+        reward_acc = -1.0
     else:
         reward_acc = -2.0
 
-    # Progress
-    if Track.get_index_offset(prev_params["index"], params["index"]) > 0:
+    # Progress; No penalization for 0 offset as the params are frame dependent
+    index_offset = Track.get_index_offset(prev_params["index"], params["index"])
+    if index_offset > 0:
         reward += 0.75
-    else:
+    elif index_offset < 0:
         reward -= 2.0
-
-    # Direction
-    offset_abs_angle = abs(params["angle"] - params["rot"])
-    offset_angle = min(offset_abs_angle, abs(offset_abs_angle - np.pi * 2))
-    if offset_angle >= 0.35:
-        reward -= 0.75
     else:
-        reward += 0.5
+        reward -= 0.25
+
+    # Keep the line direction
+    offset_angle = compute_min_offset(params["angle"], params["rot"], np.pi * 2)
+    if offset_angle >= 0.5:
+        if prev_params["rot"] == params["rot"]:
+            reward -= 0.5
+
+        prev_min = compute_min_offset(params["angle"], prev_params["rot"], np.pi * 2)
+        reward += 0.25 if offset_angle < prev_min else -1.0
+    else:
+        if prev_params["rot"] != params["rot"]:
+            reward += 0.5
 
     # Keep center
     width_offset = min(params["width"], params["width_half"])
-    track_center_offset = 1.0 - width_offset / params["width_half"]
-    reward_pos = -0.5 if track_center_offset > 0.4 else 0.5
+    reward += smoothness(width_offset / params["width_half"]) * 1.5 - 1.0
 
     # Acc reward + being alive
-    reward += 0.2 + reward_acc + reward_pos
+    reward += reward_acc + 0.25
 
     return reward
 
@@ -126,12 +138,13 @@ def render_reward_(rewards):
     plt.show()
 
 
-def racing_game(agent_active = True, agent_live = True, agent_cache = True, agent_interactive = True,
+def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_interactive = False,
                 agent_file = "model.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
-                frame_size = (200, 200), frame_discontinuity = 1, episode_count = 750, frame_buffer = False,
-                state_seq_size = 3, state_seq_discontinuity = 2, random_reset = True):
+                frame_size = (200, 200), frame_discontinuity = 1, episode_count = 500, frame_buffer = True,
+                state_seq_size = 4, state_seq_discontinuity = 3, random_reset = True):
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
+    assert (state_seq_size > state_seq_discontinuity), "The seq validation can't be larger than input seq"
 
     # Set full screen centered and hint audio for dsp instead of als
     os.environ['SDL_VIDEO_CENTERED'] = '1'
@@ -185,6 +198,8 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
             agent.load_network_from_dict(filename = agent_file)
 
             if agent_interactive:
+                agent.policy.eval()
+
                 render_reward_(agent.step_reward)
 
     state_seq, params = State(state_seq_size, state_seq_discontinuity), None
@@ -203,9 +218,9 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
                     track.sprite.movement(-Sprite.acceleration * attenuation)
 
                 if keys[pygame.K_LEFT]:
-                    track.sprite.rotation += track.sprite.steering * attenuation
+                    track.sprite.steer(Sprite.steering * attenuation)
                 elif keys[pygame.K_RIGHT]:
-                    track.sprite.rotation -= track.sprite.steering * attenuation
+                    track.sprite.steer(-Sprite.steering * attenuation)
 
             # User did something
             for event in pygame.event.get():
@@ -233,40 +248,35 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
             # Update the screen
             pygame.display.flip()
 
+        params = track.get_params()
         if not agent_active:
             # Compute rendering time
             curr_time = pygame.time.get_ticks()
             attenuation, prev_time = (curr_time - prev_time) / (1000 / FPS_CAP), curr_time
 
             # Handle constant FPS cap
-            params_next = track.get_params()
-            caption_params = [ TITLE, clock.get_fps(), params_next["index"], params_next["progress"][1],
-                               params_next["lap"] ]
+            caption_params = [ TITLE, clock.get_fps(), params["index"], params["progress"][1], params["lap"] ]
 
             clock.tick(FPS_CAP)
         else:
-            # Generate env states
+            # Generate env states and params
             state, img = create_snapshot(surface, size = frame_size, center = track.sprite.get_position(), raw = True,
                                          tensor = True, normalize = True, save = False)
-
-            # Env parameters
-            params = track.get_params(state = img, centered = True)
-            caption_params = [ TITLE, params["index"], params["progress"][1], params["lap"], agent.episode ]
+            params = track.get_params()
+            caption_params = [ TITLE, params["index"], params["progress"][1], params["lap"], 0 ]
 
             flag = state_seq.push(state, params)
             if flag == 1:
                 # Generate actions
-                actions = agent.choose_actions(torch.stack(state_seq.state_seq_prev))
+                actions = agent.choose_actions(torch.stack(state_seq.state_seq_prev), agent_live = agent_live)
                 track.sprite.act_actions(actions)
 
                 state_seq.register(actions)
 
             # Create transition and update memory state
             if not agent_live and flag == 2:
-                reward = torch.FloatTensor([ rewarder(state_seq.prev_params, state_seq.params) ]).to(agent.device)
-                actions_aligned = agent.reshape_actions(state_seq.actions).to(agent.device)
-
-                transition = Transition(torch.stack(state_seq.state_seq_prev), actions_aligned,
+                reward = torch.FloatTensor([ rewarder(state_seq.prev_params, state_seq.params) ])
+                transition = Transition(torch.stack(state_seq.state_seq_prev), state_seq.actions,
                                         torch.stack(state_seq.state_seq_prev + state_seq.state_seq), reward)
 
                 # Update memory and optimize
@@ -274,17 +284,18 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
                 agent.optimize_model()
 
             if flag == 2:
-                state_seq.reset()
+                state_seq.swap()
 
-            # Reset environment and state
-            if not params["alive"]:
-                track.reset_track(random_reset = random_reset)
-                state_seq.reset()
-
+            # Reset environment and state when not alive or finished successfully a lap
+            if not params["alive"] or params["lap"] > 0:
+                progress_total = params["lap"] * params["index_max"] + params["progress"][0]
                 if not agent_live:
-                    agent.model_new_episode()
+                    agent.model_new_episode(progress_total)
                     if agent.episode >= episode_count:
                         done = True
+
+                track.reset_track(random_reset = random_reset)
+                state_seq.reset()
 
         counter += 1
         caption_renderer(caption_params)
