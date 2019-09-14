@@ -4,7 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import io
 
+from torch.optim.rmsprop import RMSprop
 from collections import namedtuple
 from typing import List, Callable, Optional, Any
 
@@ -16,28 +18,29 @@ class DQN(nn.Module):
     size: np.ndarray
     actions_count: int
     batch_size: int
+    channels: int
 
-    def __init__(self, size: np.ndarray, actions_count: int, hidden_size = 768, num_layers = 2):
+    def __init__(self, size: np.ndarray, channels: int, actions_count: int, hidden_size = 768, num_layers = 2):
         super(DQN, self).__init__()
 
         self.size, self.actions_count = size, actions_count
         self.hidden_size, self.num_layers = hidden_size, num_layers
 
         self.sec1 = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size = 5, stride = 2, padding = 1),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(channels, 6, kernel_size = 2, stride = 1, padding = 0),
+            nn.BatchNorm2d(6),
             nn.ReLU()
         )
 
         self.sec2 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size = 5, stride = 2, padding = 1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(6, 12, kernel_size = 3, stride = 2, padding = 1),
+            nn.BatchNorm2d(12),
             nn.ReLU()
         )
 
         self.sec3 = nn.Sequential(
-            nn.Conv2d(32, 32, kernel_size = 3, stride = 2, padding = 2),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(12, 16, kernel_size = 3, stride = 2, padding = 1),
+            nn.BatchNorm2d(16),
             nn.ReLU()
         )
 
@@ -52,7 +55,7 @@ class DQN(nn.Module):
                 // np.array(conv.stride) + 1
 
         input_size = int(features[0] * features[1] * conv.out_channels)
-        self.rnn = nn.LSTM(input_size = input_size, hidden_size = self.hidden_size, num_layers = self.num_layers,
+        self.rnn = nn.GRU(input_size = input_size, hidden_size = self.hidden_size, num_layers = self.num_layers,
                            batch_first = True, bidirectional = False)
         self.ln = nn.Linear(self.hidden_size, actions_count)
 
@@ -60,20 +63,21 @@ class DQN(nn.Module):
         batch_size, seq_size = inputs.size(0), inputs.size(1)
 
         # BxSxCxHxW => BSxCxHxW
-        inputs = inputs.view(-1, *inputs.shape[-3:])
+        x = inputs.view(-1, *inputs.shape[-3:])
         for sec in self.pipeline:
-            inputs = sec.forward(inputs)
+            x = sec.forward(x)
 
         # BSxCxHxW => BxSxI
-        inputs, _ = self.rnn(inputs.view(batch_size, seq_size, -1))
+        x, _ = self.rnn(x.view(batch_size, seq_size, -1))
 
-        # BxSxI => BxI | S[-1]
-        return self.ln(inputs)[:, -1, :]
+        # Fully connected layer and BxSxI => BxI | S[-1]
+        return self.ln(x)[:, -1, :]
 
 
 class ReplayMemory:
 
-    MEMORY_CAPACITY: int = 1000
+    MEMORY_CAPACITY: int = 3250
+    REPLAY_START: int = 325
 
     bagging: float = 0.34
     capacity: int
@@ -110,8 +114,26 @@ class ReplayMemory:
 
         return None
 
+    def construct_full_state(self, curr_state):
+        last_state = self.sample_recent_transition()
+        state = getattr(last_state, "state")
+        prev_state = getattr(last_state, "next_state")
+
+        if len(curr_state) == 0:
+            full_state = torch.cat((state, prev_state))
+        else:
+            full_state = torch.cat((state, prev_state, torch.stack(curr_state)))
+
+        return full_state[-state.size(0):]
+
+    def sample_recent_transition(self):
+        return self.memory[(self.position - 1) % self.capacity]
+
     def reset_history(self):
         self.reward_acc = 0.
+
+    def is_ready(self):
+        return self.REPLAY_START <= len(self.memory)
 
     def __len__(self):
         return len(self.memory)
@@ -150,11 +172,11 @@ class State:
     def swap(self):
         self.prev_params, self.params = self.params, None
         self.state_seq_prev, self.state_seq = self.state_seq.copy(), []
-        self.actions = None
 
     def reset(self):
         self.prev_params, self.params = None, None
         self.state_seq_prev, self.state_seq = [], []
+        self.actions = None
 
 
 class Agent:
@@ -163,8 +185,8 @@ class Agent:
     GAMMA = 0.99
     EPS_START = 0.9
     EPS_END = 0.05
-    EPS_DECAY = 240
-    TARGET_UPDATE = 5e2
+    EPS_DECAY = 430
+    TARGET_UPDATE = 7e2
 
     learning_rate = 4e-3
     multiple: bool = False
@@ -177,7 +199,7 @@ class Agent:
 
     episode: int = 0
     episode_step: int = 0
-    episode_step_every: int = 15
+    episode_step_every: int = 50
 
     step: int = 0
     step_every: int = 35
@@ -185,8 +207,10 @@ class Agent:
     step_reward: list = [0]
     step_loss_min: float = np.inf
     reward_max: float = 0.
+    progress_max: float = 0.
+    progress_max_step: int = 1
 
-    def __init__(self, size, action_pool, rewarder):
+    def __init__(self, size, channels, action_pool, rewarder):
 
         self.size, self.action_pool, self.rewarder = size, action_pool, rewarder
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -197,11 +221,11 @@ class Agent:
         self.action_cum = (torch.cumsum(torch.from_numpy(self.action_pool), dim = 0) - self.action_pool[0]).to(self.device) \
             if self.multiple else None
 
-        self.policy = DQN(size, self.action_count).to(self.device)
-        self.target = DQN(size, self.action_count).to(self.device)
+        self.policy = DQN(size, channels, self.action_count).to(self.device)
+        self.target = DQN(size, channels, self.action_count).to(self.device)
         self.target.load_state_dict(self.policy.state_dict())
 
-        self.optimizer = optim.Adam(self.policy.parameters(), lr = self.learning_rate)
+        self.optimizer = RMSprop(self.policy.parameters())
         self.memory = ReplayMemory()
 
     def choose_actions(self, state_seq, agent_live = False):
@@ -211,7 +235,7 @@ class Agent:
         sample = random.random()
         eps_threshold = Agent.EPS_END + (Agent.EPS_START - Agent.EPS_END) * np.exp(-1. * self.step / Agent.EPS_DECAY)
 
-        if sample < eps_threshold or agent_live:
+        if sample > eps_threshold or agent_live:
             with torch.no_grad():
                 outputs = self.policy.forward(state_seq.clone().to(self.device).unsqueeze(0)).squeeze(0)
                 if self.multiple:
@@ -263,13 +287,13 @@ class Agent:
         return actions
 
     def optimize_model(self, loss_tracking = False):
-        if len(self.memory) < Agent.BATCH_SIZE:
+        if len(self.memory) < Agent.BATCH_SIZE or not self.memory.is_ready():
             return
 
         # Memory transitions
         transition_batch = self.memory.sample_transition_batch(Agent.BATCH_SIZE)
 
-        state_batch = torch.stack(transition_batch.state).clone().to(self.device)
+        state_batch = torch.stack(transition_batch.state).to(self.device, copy = True)
         action_batch = torch.stack(transition_batch.action)
         reward_batch = torch.cat(transition_batch.reward)
 
@@ -280,7 +304,7 @@ class Agent:
         target = torch.zeros((Agent.BATCH_SIZE,), dtype = torch.float).to(self.device)
 
         state_mask = torch.tensor([ s is not None for s in transition_batch.next_state ], dtype = torch.bool)
-        state_non_final = torch.stack([ s for s in transition_batch.next_state if s is not None ]).clone().to(self.device)
+        state_non_final = torch.stack([ s for s in transition_batch.next_state if s is not None ]).to(self.device, copy = True)
 
         target[state_mask] = self.unpack_actions(self.target.forward(state_non_final))
         outputs_action_target = reward_batch + (target * Agent.GAMMA)
@@ -290,7 +314,6 @@ class Agent:
 
         # Reset accumulated gradients and compute gradients
         self.optimizer.zero_grad()
-
         loss.backward()
 
         for param in self.policy.parameters():
@@ -304,7 +327,7 @@ class Agent:
         self.step_loss[-1] += loss.item()
 
         if self.episode_step % Agent.episode_step_every == 0:
-            print(f"\tStep: {self.episode_step}\tReward{self.memory.reward_acc}")
+            print(f"\tStep: {self.episode_step}\tReward: {self.memory.reward_acc}")
 
         if loss_tracking and self.step % Agent.step_every == 0:
             step_loss_cur = self.step_loss[-1] / self.step_every
@@ -321,13 +344,23 @@ class Agent:
             print(f"Step: {int(self.step // Agent.TARGET_UPDATE)}\tUpdating the target net...")
             self.target.load_state_dict(self.policy.state_dict())
 
-    def model_new_episode(self, progress):
-        print(f"Episode {self.episode}\tStep: {int(self.step // Agent.TARGET_UPDATE)}\tReward: "
+    def model_new_episode(self, progress, step_count):
+        print(f"Episode {self.episode}\tStep: {step_count}\tReward: "
               f"{self.memory.reward_acc:.5f} and progress: {progress}")
+
+        progress_speed = progress / step_count
+        if progress > self.progress_max or (progress_speed > self.progress_max / self.progress_max_step and
+                                            progress == self.progress_max):
+            print(f"\tProgress ({self.progress_max} --> {progress})\tSpeed: {progress_speed:0.3f}.  Saving model ...")
+
+            self.save_network_to_dict("model_distance.pt")
+            self.progress_max = progress
+            self.progress_max_step = step_count
+
         if self.memory.reward_acc > self.reward_max:
             print(f"\tReward higher ({self.reward_max:.6f} --> {self.memory.reward_acc:.6f}).  Saving model ...")
 
-            self.save_network_to_dict("model.pt")
+            self.save_network_to_dict("model_reward.pt")
             self.reward_max = self.memory.reward_acc
 
         self.step_reward[-1] = self.memory.reward_acc
@@ -341,7 +374,10 @@ class Agent:
         """ Load a network from the dict """
 
         # load network state
-        checkpoint = torch.load("./models/" + filename, map_location = self.device.type)
+        with open("./models/" + filename, 'rb') as file:
+            buffer = io.BytesIO(file.read())
+
+        checkpoint = torch.load(buffer, map_location = self.device.type)
 
         # assign parameters
         self.policy.load_state_dict(checkpoint["state_model"])

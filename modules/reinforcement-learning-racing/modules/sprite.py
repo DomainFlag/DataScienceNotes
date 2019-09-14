@@ -9,7 +9,7 @@ class Sprite:
 
     SPRITE_SIZE: np.ndarray = np.array([25, 25])
 
-    MAX_VELOCITY: float = 2.45
+    MAX_VELOCITY: float = 2.75
     MIN_VELOCITY: float = -1.92
 
     ACTION_SPACE_COUNT = 2
@@ -74,10 +74,10 @@ class Sprite:
             motion -= Sprite.acceleration
 
         if action in [2, 4, 6]:
-            steering += Sprite.steering
+            steering += Sprite.steering * 3.0
 
         if action in [3, 5, 7]:
-            steering -= Sprite.steering
+            steering -= Sprite.steering * 3.0
 
         self.movement(motion)
         self.steer(steering)
@@ -87,7 +87,7 @@ class Sprite:
         self.rotation = 0.
 
     def get_position(self):
-        return self.position + self.offset - self.car_size_offset
+        return self.position + self.offset
 
     def render(self, screen):
         surf = pygame.transform.rotate(self.car_tex, (np.pi / 2.0) / np.pi * 180 + self.rotation / np.pi * 180)

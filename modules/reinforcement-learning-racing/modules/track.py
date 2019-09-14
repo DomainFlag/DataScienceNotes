@@ -33,6 +33,7 @@ class Track:
     start_index: int = -1
     index: int = 0
     progress: int = 0
+    progress_max: int = 0
 
     static_params: dict = {
         "width_max": WIDTH_MAX,
@@ -108,7 +109,7 @@ class Track:
         return shape, np.min(dsts), rotation
 
     def get_track_position(self, index):
-        return self.track_data[index].copy()
+        return self.track_data[index].copy() + self.track_offset
 
     def get_metadata(self, index = 0, offset = 25):
         if self.track_data is None or len(self.track_data) == 0:
@@ -137,7 +138,20 @@ class Track:
         start_pos, start_rot = self.get_metadata(index = self.start_index)
         self.sprite.position, self.sprite.rotation = start_pos, start_rot
         self.index, self.lap = self.start_index, 0
-        self.progress = 0
+        self.progress, self.progress_max = 0, 0
+
+    def is_to_left(self):
+        """ Helper function for retrieving whenever the sprite is to the left of track from track perspective """
+        pos_origin, pos_track = self.sprite.get_position(), self.get_track_position(self.index)
+        origin_angle, magnitude = point_angle(pos_origin, pos_track, invert = True)
+        if origin_angle is None:
+            return None
+
+        offset_angle = self.get_metadata(self.index, offset = 5)[-1]
+        origin_angle -= offset_angle
+
+        pos_translated = np.array([np.cos(origin_angle), np.sin(origin_angle)]) * magnitude + pos_track
+        return pos_translated[1] > pos_track[1]
 
     def is_alive(self, state = None, centered = False, precision = True):
         if precision and state is not None:
@@ -190,9 +204,14 @@ class Track:
             self.progress = Track.TRACK_PRECISION + self.progress
             self.lap -= 1
 
-    def render(self, screen, direction_offset = 200, hint_direction = True, hint_boundary = False):
+        self.progress_max = max(self.lap * Track.TRACK_PRECISION + self.progress, self.progress_max)
+
+    def render(self, screen, direction_offset = 200, hint_direction = True, hint_boundary = True):
         # Render track
         screen.blit(self.track_surface, (0, 0))
+
+        # Render the sprites
+        self.sprite.render(screen)
 
         if hint_direction:
             position_hint = self.track_data[(self.index + direction_offset) % len(self.track_data)] + self.track_offset
@@ -203,19 +222,20 @@ class Track:
             for pt in self.pts:
                 pygame.draw.circle(screen, GREEN, (pt + self.track_offset).astype(int), 1)
 
-            pygame.draw.circle(screen, RED, (self.get_track_position(self.index) + self.track_offset).astype(int), 2)
-
-        # Render the sprites
-        self.sprite.render(screen)
+            pygame.draw.circle(screen, RED, self.get_track_position(self.index).astype(int), 2)
 
     def get_params(self, state = None, centered = False):
         params = Track.static_params.copy()
         params.update({
             "width": self.width,
             "index": self.index,
+            "index_pos": self.get_track_position(self.index),
+            "is_to_left": self.is_to_left(),
             "start_index": self.start_index,
             "lap": self.lap,
             "progress": (self.progress, self.progress / self.TRACK_PRECISION * 100),
+            "progress_total": self.lap * Track.TRACK_PRECISION + self.progress,
+            "progress_max": self.progress_max,
             "alive": self.is_alive(state, centered),
             "angle": self.get_metadata(self.index, offset = 5)[-1]
         })
@@ -306,15 +326,22 @@ def calc_point_distance(center = None):
     return lambda point: calc_distance(point, center)
 
 
-def point_angle(point, width, height):
-    pivot_transl = np.array(point) - np.array([width, height]) / 2.0
-    pivot_normal = pivot_transl / np.sqrt(np.dot(pivot_transl, pivot_transl))
+def point_angle(point, origin, invert = False):
+    if (point == origin).all():
+        return None, None
+
+    pivot_transl = point - origin
+    if invert:
+        pivot_transl[-1] *= -1
+
+    pivot_distance = np.sqrt(np.dot(pivot_transl, pivot_transl))
+    pivot_normal = pivot_transl / pivot_distance
 
     angle = np.arctan2(pivot_normal[1], pivot_normal[0])
     if angle < 0:
         angle = 2 * np.pi - np.abs(angle)
 
-    return angle
+    return angle, pivot_distance
 
 
 def pivot_map_generate(size, width, height, threshold_dist = 0.75, threshold_angle = 0.3):
@@ -326,7 +353,7 @@ def pivot_map_generate(size, width, height, threshold_dist = 0.75, threshold_ang
     pivot_angle = None
     pivot_distance = 0
     for point in points:
-        angle = point_angle(point, width, height)
+        angle, _ = point_angle(np.array(point), np.array([width, height]) / 2.0, invert = True)
         angles[angle] = point
 
         point_distance = np.linalg.norm(point)
