@@ -9,15 +9,15 @@ class Sprite:
 
     SPRITE_SIZE: np.ndarray = np.array([25, 25])
 
-    MAX_VELOCITY: float = 2.75
-    MIN_VELOCITY: float = -1.92
+    MAX_VELOCITY: float = 2.15
+    MIN_VELOCITY: float = 0.
 
     ACTION_SPACE_COUNT = 2
     MOTION_SPACE_COUNT = 2
     STEERING_SPACE_COUNT = 2
 
-    acceleration: float = 0.025
-    steering: float = 0.037
+    acceleration: float = 0.05
+    steering: float = 0.035
     attenuation: float = 0.25
 
     static_params: dict = {
@@ -62,7 +62,8 @@ class Sprite:
 
         self.position += direction * self.velocity * scaling
 
-    def act_actions(self, action):
+    def act_action(self, action):
+        """ action-8 do nothing """
         if action is None:
             return None
 
@@ -74,10 +75,10 @@ class Sprite:
             motion -= Sprite.acceleration
 
         if action in [2, 4, 6]:
-            steering += Sprite.steering * 3.0
+            steering += Sprite.steering
 
         if action in [3, 5, 7]:
-            steering -= Sprite.steering * 3.0
+            steering -= Sprite.steering
 
         self.movement(motion)
         self.steer(steering)

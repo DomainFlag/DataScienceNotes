@@ -27,7 +27,7 @@ class Track:
     pivots: list
 
     sprite: Sprite = None
-    pts: list
+    pts: list = None
     lap: int = 0
     width: float = 0.
     start_index: int = -1
@@ -171,6 +171,9 @@ class Track:
 
             return True
         else:
+            if self.pts is None:
+                self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
+
             pt1, pt2 = (self.pts[0], self.pts[1]) if self.pts[0][0] < self.pts[1][0] else (self.pts[1], self.pts[0])
             norm_pt = pt2 - pt1
             norm_pt = norm_pt / np.linalg.norm(norm_pt)
@@ -216,7 +219,7 @@ class Track:
         if hint_direction:
             position_hint = self.track_data[(self.index + direction_offset) % len(self.track_data)] + self.track_offset
 
-            pygame.draw.circle(screen, YELLOW, position_hint.astype(int), 3)
+            pygame.draw.circle(screen, YELLOW, position_hint.astype(int), 5)
 
         if hint_boundary:
             for pt in self.pts:
