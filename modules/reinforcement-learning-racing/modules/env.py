@@ -170,19 +170,19 @@ class Env:
         # Event queue while window is active
         if not self.frame_buffer:
 
-            if not self.agent_active:
-                # Continuous key press
-                keys = pygame.key.get_pressed()
+            # if not self.agent_active:
+            # Continuous key press
+            keys = pygame.key.get_pressed()
 
-                if keys[pygame.K_UP]:
-                    self.track.sprite.movement(Sprite.acceleration * self.attenuation)
-                elif keys[pygame.K_DOWN]:
-                    self.track.sprite.movement(-Sprite.acceleration * self.attenuation)
+            if keys[pygame.K_UP]:
+                self.track.sprite.movement(Sprite.acceleration * self.attenuation)
+            elif keys[pygame.K_DOWN]:
+                self.track.sprite.movement(-Sprite.acceleration * self.attenuation)
 
-                if keys[pygame.K_LEFT]:
-                    self.track.sprite.steer(Sprite.steering * self.attenuation)
-                elif keys[pygame.K_RIGHT]:
-                    self.track.sprite.steer(-Sprite.steering * self.attenuation)
+            if keys[pygame.K_LEFT]:
+                self.track.sprite.steer(Sprite.steering * self.attenuation)
+            elif keys[pygame.K_RIGHT]:
+                self.track.sprite.steer(-Sprite.steering * self.attenuation)
 
             # User did something
             for event in pygame.event.get():

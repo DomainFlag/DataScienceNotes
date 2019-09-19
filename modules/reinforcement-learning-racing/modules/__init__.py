@@ -1,4 +1,4 @@
 from .sprite import Sprite
 from .track import Track
-from .model import Agent, Transition, ReplayMemory
 from .env import Env
+from .memory import ReplayMemory, Transition

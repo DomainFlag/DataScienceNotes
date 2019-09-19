@@ -251,7 +251,7 @@ class Track:
         """ Load track data from dict """
 
         # load track data
-        track_dict = np.load("./models/" + filename, allow_pickle = True).item()
+        track_dict = np.load("./static/" + filename, allow_pickle = True).item()
 
         assert(isinstance(track_dict, dict))
 
@@ -270,7 +270,7 @@ class Track:
             'data': self.track_data
         }
 
-        np.save("./models/" + filename, track_dict)
+        np.save("./static/" + filename, track_dict)
 
         print("Track saved successfully")
 

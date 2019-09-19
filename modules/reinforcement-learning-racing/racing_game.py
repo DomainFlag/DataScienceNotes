@@ -3,14 +3,8 @@ import torch
 import matplotlib.pyplot as plt
 
 from itertools import count
-from modules import Track, Sprite, Agent, Transition, Env
-
-TITLE = "RL racer"
-SIZE = [500, 500]
-
-FPS_CAP = 60.0
-TRANSPARENT = (0, 0, 0, 0)
-CLEAR_SCREEN = (255, 255, 255)
+from modules import Track, Sprite, Transition, Env
+from models import Agent
 
 
 def smoothness(x):
@@ -98,15 +92,15 @@ def render_reward_(rewards, step = 5):
     plt.show()
 
 
-def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_interactive = False,
-                agent_file = "model_reward.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
-                frame_size = (200, 200), episode_count = 1000, frame_buffer = True,
+def racing_game(agent_active = True, agent_live = True, agent_cache = True, agent_interactive = True,
+                agent_file = "model_distance.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
+                frame_size = (200, 200), episode_count = 700, frame_buffer = False,
                 grayscale = True, random_reset = True):
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
 
     # Setting default frame size
-    frame_size = np.array(frame_size) if frame_size is not None else np.array(SIZE)
+    frame_size = np.array(frame_size)
 
     # Environment
     env = Env(frame_size, frame_buffer = frame_buffer, agent_active = agent_active, track_file = track_file,
@@ -122,7 +116,7 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
         channels = 1 if grayscale else 3
         agent = Agent(frame_size, channels, action_space, rewarder)
         if agent_cache:
-            agent.load_network_from_dict(filename = agent_file)
+            agent.load_network_from_dict(agent_file, agent_live)
 
             if agent_interactive:
                 agent.policy.eval()
