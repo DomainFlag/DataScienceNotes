@@ -3,7 +3,6 @@
 
 __pycache__/
 
-notes/
-
+**/notes/
 **/data/
-**/models/
+**/static/

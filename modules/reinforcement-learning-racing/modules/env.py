@@ -80,14 +80,13 @@ def get_caption_renderer(window_active, clock = False):
 
 
 class Env:
-
     attenuation: float = 1.0
     frame_buffer: bool
     agent_active: bool
 
     def __init__(self, frame_size, frame_buffer = False, agent_active = False, track_file = None, track_cache = True,
                  track_save = False):
-        self.frame_size = frame_size
+        self.frame_size = np.array(frame_size)
         self.frame_buffer = frame_buffer
         self.agent_active = agent_active
 
@@ -111,7 +110,7 @@ class Env:
             self.surface = pygame.Surface(SIZE)
 
         # Window caption renderer
-        caption_renderer = get_caption_renderer(not frame_buffer, clock=not agent_active)
+        caption_renderer = get_caption_renderer(not frame_buffer, clock = not agent_active)
 
         # Loop until the user clicks the close button.
         self.done = False
@@ -121,8 +120,8 @@ class Env:
 
         # Create the environment
         self.track = Track()
-        self.track.initialize_track(SIZE, text_renderer, track_save=track_save, track_cache=track_cache,
-                               filename = track_file)
+        self.track.initialize_track(SIZE, text_renderer, track_save = track_save, track_cache = track_cache,
+                                    filename = track_file)
         self.track.initialize_sprite()
         if not agent_active:
             # Set up timer for smooth rendering and synchronization
@@ -135,8 +134,8 @@ class Env:
 
         if frame_active:
             sprite_pos = self.track.sprite.get_position()
-            frame, img = create_snapshot(self.surface, size=self.frame_size, center=sprite_pos, raw=True,
-                                         tensor=True, grayscale=True)
+            frame, img = create_snapshot(self.surface, size = self.frame_size, center = sprite_pos, raw = True,
+                                         tensor = True, grayscale = True)
 
         if params_active:
             params = self.track.get_params()
@@ -195,7 +194,7 @@ class Env:
                     if event.key == pygame.K_ESCAPE:
                         self.done = True
                     elif event.key == pygame.K_PRINT:
-                        create_snapshot(self.surface, filename="screen.png", save=True)
+                        create_snapshot(self.surface, filename = "screen.png", save = True)
                     elif event.key == pygame.K_r:
                         self.track.reset_track()
 

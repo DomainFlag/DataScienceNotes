@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 from itertools import count
 from modules import Track, Sprite, Transition, Env
-from models import Agent
+from models import DQN, A2C, Base
 
 
 def smoothness(x):
@@ -99,9 +99,6 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
 
-    # Setting default frame size
-    frame_size = np.array(frame_size)
-
     # Environment
     env = Env(frame_size, frame_buffer = frame_buffer, agent_active = agent_active, track_file = track_file,
               track_cache = track_cache, track_save = track_save)
@@ -113,8 +110,8 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
         # Set up the agent
         action_space = Sprite.ACTION_SPACE_COUNT * Sprite.MOTION_SPACE_COUNT * Sprite.STEERING_SPACE_COUNT + 1
 
-        channels = 1 if grayscale else 3
-        agent = Agent(frame_size, channels, action_space, rewarder)
+        size = (1, *frame_size) if grayscale else (3, *frame_size)
+        agent: Base = DQN(size, action_space)
         if agent_cache:
             agent.load_network_from_dict(agent_file, agent_live)
 
@@ -131,6 +128,7 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
             prev_screen, _, prev_params = env.state(frame_active = True, params_active = True)
             screen = prev_screen
             prev_state = screen - prev_screen
+            reward_total = torch.tensor(0.)
 
             for step in count():
 
@@ -151,6 +149,7 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
                 # Update memory and optimize model
                 if not agent_live:
                     reward = torch.tensor(rewarder(prev_params, params)).to(agent.device)
+                    reward_total += reward
                     transition = Transition(prev_state, action, state, reward)
 
                     agent.memory.push(transition)
@@ -162,7 +161,7 @@ def racing_game(agent_active = True, agent_live = True, agent_cache = True, agen
                 # Reset environment and state when not alive or finished successfully a lap
                 if not params["alive"] or params["lap"] > 0:
                     if not agent_live:
-                        agent.model_new_episode(params["progress_total"], step)
+                        agent.model_new_episode(params["progress_total"], reward_total.item(), step)
                         env.done = agent.episode >= episode_count
 
                     env.reset(random_reset=random_reset)
