@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from models.base import Base
-from modules import ReplayMemory
+from modules import ReplayMemory, Transition
 from torch.optim.rmsprop import RMSprop
 
 
@@ -94,9 +94,18 @@ class DQN(Base):
         else:
             action = torch.tensor(np.random.rand(self.action_count).argmax(), dtype = torch.long).to(self.device)
 
-        return action
+        return action, None
 
-    def optimize_model(self):
+    def eval(self):
+        self.policy.eval()
+
+    def optimize_model(self, prev_state, action, state, reward, params = None, residuals = None):
+        # Create transition
+        self.memory.push(Transition(prev_state, action, state, reward))
+        self.step += 1
+        self.episode_step += 1
+        self.reward_acc += reward.item()
+
         if len(self.memory) < DQN.BATCH_SIZE or not self.memory.is_ready():
             return
 
@@ -139,15 +148,14 @@ class DQN(Base):
         # Adjust weights
         self.optimizer.step()
 
-        self.step += 1
-        self.episode_step += 1
-
         if self.episode_step % DQN.episode_step_every == 0:
-            print(f"\tStep: {self.episode_step}\tReward: {self.memory.reward_acc}")
+            print(f"\tStep: {self.episode_step}\tReward: {self.reward_acc}")
 
         if self.step % DQN.TARGET_UPDATE == 0:
             print(f"Step: {int(self.step // DQN.TARGET_UPDATE)}\tUpdating the target net...")
             self.target.load_state_dict(self.policy.state_dict())
+
+        return False
 
     def load_network_from_dict(self, filename, agent_live, verbose = True):
         """ Load a network from the dict """

@@ -1,21 +1,22 @@
 import torch
-import torch.nn as nn
 import io
 
 
-class Base(nn.Module):
+class Base:
 
     size: tuple
     action_count: int
 
+    step: int = 0
     global_step: int = 0
 
     episode: int = 0
     episode_step: int = 0
     episode_step_every: int = 50
 
-    reward_history: list = []
+    reward_acc: float = 0.
     reward_max: float = 0.
+    reward_history: list = []
 
     progress_history: list = []
     progress_max: float = 0.
@@ -31,12 +32,15 @@ class Base(nn.Module):
     def choose_action(self, state, agent_live = False):
         raise not NotImplementedError
 
-    def optimize_model(self):
+    def optimize_model(self, prev_state, action, state, reward, params = None, residuals = None) -> bool:
         raise NotImplementedError
 
-    def model_new_episode(self, progress, reward, step_count):
+    def eval(self):
+        raise NotImplementedError
+
+    def model_new_episode(self, progress, step_count):
         print(f"Episode {self.episode}\tStep: {step_count}\tReward: "
-              f"{reward:.5f} and progress: {progress}")
+              f"{self.reward_acc:.5f} and progress: {progress}")
 
         progress_speed = progress / step_count
         if progress > self.progress_max or (progress_speed > self.progress_max / self.progress_max_step and
@@ -47,16 +51,16 @@ class Base(nn.Module):
             self.progress_max = progress
             self.progress_max_step = step_count
 
-        if reward > self.reward_max:
-            print(f"\tReward higher ({self.reward_max:.6f} --> {reward:.6f}).  Saving model ...")
+        if self.reward_acc > self.reward_max:
+            print(f"\tReward higher ({self.reward_max:.6f} --> {self.reward_acc:.6f}).  Saving model ...")
 
             self.save_network_to_dict("model_reward.pt")
-            self.reward_max = reward
+            self.reward_max = self.reward_acc
 
-        self.reward_history.append(reward)
+        self.reward_history.append(self.reward_acc)
         self.progress_history.append(progress)
         self.episode += 1
-        self.episode_step = 0
+        self.episode_step, self.reward_acc = 0, 0.
 
     def load_network_from_dict(self, filename, agent_live, verbose = True):
         """ Load a network from the dict """

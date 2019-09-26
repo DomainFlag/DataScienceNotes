@@ -14,7 +14,6 @@ class ReplayMemory:
     capacity: int
     memory: List[Transition]
     position: int
-    reward_acc: float = 0.
 
     def __init__(self, capacity: int = None):
         self.memory = []
@@ -29,15 +28,11 @@ class ReplayMemory:
             self.memory[self.position] = transition
 
         self.position = (self.position + 1) % self.capacity
-        self.reward_acc += getattr(transition, "reward").item()
 
     def sample_transition_batch(self, batch_size) -> Optional[Transition]:
         transitions = random.sample(self.memory, batch_size)
 
         return Transition(*zip(*transitions))
-
-    def reset_history(self):
-        self.reward_acc = 0.
 
     def is_ready(self):
         return self.REPLAY_START <= len(self.memory)

@@ -20,7 +20,7 @@ ROAD_HINT = (143, 152, 86)
 class Track:
 
     TRACK_PRECISION: int = 5000
-    TRACK_OFFSET: int = TRACK_PRECISION // 10
+    TRACK_OFFSET: int = TRACK_PRECISION // 2
     WIDTH_MAX: int = 60
 
     points: list
@@ -227,6 +227,14 @@ class Track:
 
             pygame.draw.circle(screen, RED, self.get_track_position(self.index).astype(int), 2)
 
+    def get_progress(self):
+        return self.progress, self.progress / self.TRACK_PRECISION * 100
+
+    def get_progress_total(self):
+        progress_total = self.lap * Track.TRACK_PRECISION + self.progress
+
+        return progress_total, progress_total / Track.TRACK_PRECISION * 100
+
     def get_params(self, state = None, centered = False):
         params = Track.static_params.copy()
         params.update({
@@ -236,8 +244,8 @@ class Track:
             "is_to_left": self.is_to_left(),
             "start_index": self.start_index,
             "lap": self.lap,
-            "progress": (self.progress, self.progress / self.TRACK_PRECISION * 100),
-            "progress_total": self.lap * Track.TRACK_PRECISION + self.progress,
+            "progress": self.get_progress(),
+            "progress_total": self.get_progress_total(),
             "progress_max": self.progress_max,
             "alive": self.is_alive(state, centered),
             "angle": self.get_metadata(self.index, offset = 5)[-1]
@@ -279,7 +287,6 @@ class Track:
         if abs(index1 - index2) > Track.TRACK_OFFSET:
             # The sprite is located between the start/end extremity
             index_lower, index_upper = (index2, index1) if (index1 > index2) else (index1, index2)
-
             offset = index_lower - (index_upper - Track.TRACK_PRECISION)
 
             return offset if index2 < Track.TRACK_OFFSET else -offset
