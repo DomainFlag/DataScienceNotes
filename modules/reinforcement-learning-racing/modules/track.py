@@ -128,12 +128,13 @@ class Track:
 
         return curr_pos, angle
 
-    def reset_track(self, random_reset = False):
+    def reset_track(self, random_reset = False, hard_reset = False):
         # Reset the sprite
         self.sprite.reset()
 
-        # Random reset position
-        self.start_index = 0 if not random_reset else np.random.randint(len(self.track_data))
+        if hard_reset:
+            # Random reset position
+            self.start_index = 0 if not random_reset else np.random.randint(len(self.track_data))
 
         start_pos, start_rot = self.get_metadata(index = self.start_index)
         self.sprite.position, self.sprite.rotation = start_pos, start_rot

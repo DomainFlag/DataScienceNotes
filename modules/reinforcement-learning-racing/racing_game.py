@@ -6,7 +6,7 @@ from itertools import count
 from modules import Track, Sprite, Env
 from models import DQN, A2C, Base
 
-RACE_VERSION = 0.71
+RACE_VERSION = 0.81
 
 
 def smoothness(x):
@@ -96,8 +96,8 @@ def rewarder(prev_params: dict, params: dict) -> float:
     return reward
 
 
-def render_reward_(rewards, step = 5):
-    reward_steps = np.array(rewards[:(len(rewards) // step) * step]).reshape(-1, step)
+def agent_display_(data, title, step = 15):
+    reward_steps = np.array(data[:(len(data) // step) * step]).reshape(-1, step)
 
     smooth_path = reward_steps.reshape(-1, step).mean(axis = 1)
     path_deviation = 1.5 + reward_steps.reshape(-1, step).std(axis = 1)
@@ -106,14 +106,14 @@ def render_reward_(rewards, step = 5):
     plt.plot(indices, smooth_path, linewidth = 2)
     plt.fill_between(indices, (smooth_path - path_deviation / 2), (smooth_path + path_deviation / 2), color = 'b',
                      alpha = .05)
-    plt.title('Reward')
+    plt.title(title)
     plt.show()
 
 
 def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_interactive = False,
                 agent_file = "model.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
-                frame_size = (200, 200), episode_count = 1500, frame_buffer = True,
-                grayscale = True, random_reset = True):
+                frame_size = (200, 200), episode_count = 800, frame_buffer = True,
+                grayscale = True, random_reset = True, reset_every = 15):
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
 
@@ -138,7 +138,9 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
             if agent_interactive:
                 agent.eval()
 
-                render_reward_(agent.reward_history)
+                # Display training info
+                agent_display_(agent.reward_history, title = "Reward")
+                agent_display_(agent.progress_history, title = "Progress")
 
         while not env.done:
             # Render initially
@@ -147,7 +149,7 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
             # Init screen
             prev_screen, _, prev_params = env.state(frame_active = True, params_active = True)
             screen = prev_screen
-            prev_state = (screen - prev_screen).to(agent.device)
+            prev_state = prev_screen.to(agent.device)
 
             for step in count():
 
@@ -161,7 +163,7 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
                 # Get current state
                 screen, _, params = env.state(frame_active = True, params_active = True)
                 if params["alive"]:
-                    state = (screen - prev_screen).to(agent.device)
+                    state = screen.to(agent.device)
                 else:
                     state = None
 
@@ -177,13 +179,12 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
 
                 # Reset environment and state when not alive or finished successfully a lap
                 if not params["alive"] or params["lap"] > 0 or flag:
-                    if not agent_live:
-                        agent.model_new_episode(params["progress_total"][1], step)
-                        if not env.done:
-                            # Checking in case of explicit exit
-                            env.done = agent.episode >= episode_count
+                    agent.model_new_episode(params["progress_total"][1], step, agent_live)
+                    if not env.done and not agent_live:
+                        # Checking in case of explicit exit
+                        env.done = agent.episode >= episode_count
 
-                    env.reset(random_reset = random_reset)
+                    env.reset(random_reset = random_reset, hard_reset = agent.episode % reset_every == 0)
                     break
 
                 if env.done:

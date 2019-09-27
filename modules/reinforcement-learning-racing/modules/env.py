@@ -13,6 +13,9 @@ FPS_CAP = 60.0
 TRANSPARENT = (0, 0, 0, 0)
 CLEAR_SCREEN = (255, 255, 255)
 
+IMG_MEAN: float = 0.0707
+IMG_SD: float = 0.1122
+
 
 def create_text_renderer(screen):
     # Load font
@@ -50,16 +53,16 @@ def create_snapshot(surface, size = None, center = None, filename: str = "screen
     if raw:
         raw_image = np.asarray(image)
         if tensor:
-            raw_image_tensor = torch.from_numpy(raw_image)
+            raw_image_tensor = torch.from_numpy(raw_image).float()
             if not grayscale or len(image.getbands()) > 1:
                 raw_image_tensor = raw_image_tensor.transpose(1, 2).transpose(0, 1)
             else:
                 raw_image_tensor = raw_image_tensor.unsqueeze(dim = 0)
 
             if normalize:
-                raw_image_tensor /= 255.
+                raw_image_tensor = (raw_image_tensor / 255. - IMG_MEAN) / IMG_SD
 
-            return raw_image_tensor.float(), image
+            return raw_image_tensor, image
 
         return raw_image, image
 
@@ -135,7 +138,7 @@ class Env:
         if frame_active:
             sprite_pos = self.track.sprite.get_position()
             frame, img = create_snapshot(self.surface, size = self.frame_size, center = sprite_pos, raw = True,
-                                         tensor = True, grayscale = True)
+                                         tensor = True, grayscale = True, normalize = True)
 
         if params_active:
             params = self.track.get_params()
@@ -198,8 +201,8 @@ class Env:
                     elif event.key == pygame.K_r:
                         self.track.reset_track()
 
-    def reset(self, random_reset = False):
-        self.track.reset_track(random_reset = random_reset)
+    def reset(self, random_reset = False, hard_reset = False):
+        self.track.reset_track(random_reset = random_reset, hard_reset = hard_reset)
 
     def release(self):
         # Be IDLE friendly

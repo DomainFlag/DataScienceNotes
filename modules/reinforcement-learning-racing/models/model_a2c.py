@@ -58,14 +58,14 @@ class Model(nn.Module):
         # Actor - fully connected layer
         self.actor = nn.Sequential(
             nn.Linear(self.hidden_size, 64),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(64, self.actions_count)
         )
 
         # Critic - fully connected layer
         self.critic = nn.Sequential(
             nn.Linear(self.hidden_size, 64),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(64, 1)
         )
 
@@ -95,14 +95,13 @@ class Model(nn.Module):
 
 class A2C(Base):
 
-    GAMMA = 0.9
-    EPS_START = 0.9
-    EPS_END = 0.05
-    EPS_DECAY = 2e3
-    LEARNING_RATE = 4e-3
-    ENTROPY_STRENGTH = 0.025
-    VALUE_COEF = 0.25
-    STEP_MAX = 525
+    GAMMA = 0.99
+    ENT_START = 0.01
+    ENT_END = 0.001
+    ENT_DECAY = 2e3
+    LEARNING_RATE = 2e-4
+    VALUE_COEF = 0.5
+    STEP_MAX = 950
 
     rewards: list = []
     values: list = []
@@ -118,13 +117,13 @@ class A2C(Base):
         self.optimizer = RMSprop(self.model.parameters(), A2C.LEARNING_RATE)
 
     def choose_action(self, state, agent_live = False):
-        policy, value, self.hidden_state = self.model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
-        eps_threshold = A2C.EPS_END + (A2C.EPS_START - A2C.EPS_END) * np.exp(-1. * self.step / A2C.EPS_DECAY)
-
-        if agent_live or random.random() > eps_threshold:
-            action = policy.topk(1, dim = 1).indices[0, 0]
+        if agent_live:
+            with torch.no_grad():
+                policy, value, self.hidden_state = self.model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
         else:
-            action = policy.multinomial(1).data[0, 0]
+            policy, value, self.hidden_state = self.model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
+
+        action = policy.multinomial(1).data[0, 0]
 
         return action, (policy, value)
 
@@ -147,6 +146,8 @@ class A2C(Base):
             print(f"\tStep: {self.episode_step}\tReward: {self.reward_acc}")
 
         if not params['alive'] or self.episode_step == A2C.STEP_MAX:
+            self.optimizer.zero_grad()
+
             rewards = torch.zeros((len(self.rewards,))).to(self.device)
             if self.episode_step == A2C.STEP_MAX:
                 rewards[-1] = self.values[-1]
@@ -158,13 +159,15 @@ class A2C(Base):
 
             # MSE error
             value_loss = A2C.VALUE_COEF * advantages.pow(2).mean()
-            policy_loss = (-torch.stack(self.probs_log) * advantages).mean()
+            policy_loss = (torch.stack(self.probs_log) * advantages).mean()
 
-            # policy gradient loss + value gradient loss - entropy * entropy strength
-            loss = policy_loss + value_loss - A2C.ENTROPY_STRENGTH * self.entropy.to(self.device)
+            # Entropy strength
+            ent_strength = A2C.ENT_END + (A2C.ENT_START - A2C.ENT_END) * np.exp(-1. * self.step / A2C.ENT_DECAY)
 
-            self.optimizer.zero_grad()
+            # Gradient ascent on policy, entropy - reward and exploration | descent on value - minimize critic penalty
+            loss = value_loss - policy_loss - ent_strength * self.entropy.to(self.device)
             loss.backward()
+
             self.optimizer.step()
 
             return True
@@ -174,8 +177,8 @@ class A2C(Base):
     def eval(self):
         self.model.eval()
 
-    def model_new_episode(self, progress, step_count):
-        super().model_new_episode(progress, step_count)
+    def model_new_episode(self, progress, step_count, agent_live):
+        super().model_new_episode(progress, step_count, agent_live)
 
         self.hidden_state = None
         self.entropy = torch.tensor(0., device = self.device)

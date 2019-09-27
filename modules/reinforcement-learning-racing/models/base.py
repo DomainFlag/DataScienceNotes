@@ -38,7 +38,10 @@ class Base:
     def eval(self):
         raise NotImplementedError
 
-    def model_new_episode(self, progress, step_count):
+    def model_new_episode(self, progress, step_count, agent_live):
+        if agent_live:
+            return
+
         print(f"Episode {self.episode}\tStep: {step_count}\tReward: "
               f"{self.reward_acc:.5f} and progress: {progress}")
 

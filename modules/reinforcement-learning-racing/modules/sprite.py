@@ -10,7 +10,7 @@ class Sprite:
     SPRITE_SIZE: np.ndarray = np.array([25, 25])
 
     MAX_VELOCITY: float = 2.15
-    MIN_VELOCITY: float = 0.
+    MIN_VELOCITY: float = 0.25
 
     ACTION_SPACE_COUNT = 2
     MOTION_SPACE_COUNT = 2
@@ -31,7 +31,7 @@ class Sprite:
         self.position = position
         self.rotation = rotation
         self.offset = offset
-        self.velocity = 0.
+        self.velocity = Sprite.MIN_VELOCITY
 
     def initialize(self):
         # Car texture
@@ -84,7 +84,7 @@ class Sprite:
         self.steer(steering)
 
     def reset(self):
-        self.velocity = 0.
+        self.velocity = Sprite.MIN_VELOCITY
         self.rotation = 0.
 
     def get_position(self):
