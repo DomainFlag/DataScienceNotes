@@ -66,11 +66,11 @@ class DQN(Base):
     """
 
     BATCH_SIZE = 64
-    GAMMA = 0.9999
-    EPS_START = 0.9
+    GAMMA = 0.999
+    EPS_START = 0.8
     EPS_END = 0.05
     EPS_DECAY = 3e3
-    TARGET_UPDATE = 4e3
+    TARGET_UPDATE = 2e3
     LEARNING_RATE = 4e-3
 
     def __init__(self, size, action_count, double = True):
@@ -99,7 +99,7 @@ class DQN(Base):
     def eval(self):
         self.policy.eval()
 
-    def optimize_model(self, prev_state, action, state, reward, params = None, residuals = None):
+    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None):
         # Create transition
         self.memory.push(Transition(prev_state, action, state, reward))
         self.step += 1

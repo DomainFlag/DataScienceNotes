@@ -10,7 +10,7 @@ class Sprite:
     SPRITE_SIZE: np.ndarray = np.array([25, 25])
 
     MAX_VELOCITY: float = 2.15
-    MIN_VELOCITY: float = 0.25
+    MIN_VELOCITY: float = 0.4
 
     ACTION_SPACE_COUNT = 2
     MOTION_SPACE_COUNT = 2
@@ -63,21 +63,21 @@ class Sprite:
         self.position += direction * self.velocity * scaling
 
     def act_action(self, action):
-        """ action-8 do nothing """
+        """ action-4 do nothing """
         if action is None:
             return None
 
         motion, steering = 0., 0.
-        if action in [0, 4, 5]:
+        if action == 0:
             motion += Sprite.acceleration
 
-        if action in [1, 6, 7]:
+        if action == 1:
             motion -= Sprite.acceleration
 
-        if action in [2, 4, 6]:
+        if action == 2:
             steering += Sprite.steering
 
-        if action in [3, 5, 7]:
+        if action == 3:
             steering -= Sprite.steering
 
         self.movement(motion)
@@ -90,10 +90,23 @@ class Sprite:
     def get_position(self):
         return self.position + self.offset
 
-    def render(self, screen):
-        surf = pygame.transform.rotate(self.car_tex, (np.pi / 2.0) / np.pi * 180 + self.rotation / np.pi * 180)
+    def get_sprite_rotated(self, img, angle, offset):
+        """ Rotate the image while keeping its center. """
 
-        screen.blit(surf, self.position + self.offset - self.car_size_offset)
+        rot_image = pygame.transform.rotate(img, angle)
+        rot_rect = rot_image.get_rect(center = img.get_rect().center)
+
+        return rot_image, rot_rect.move(*offset)
+
+    def render(self, screen):
+        # Get params
+        offset = self.position + self.offset - self.car_size_offset
+        rotation = 90 + self.rotation / np.pi * 180
+
+        # Rotate an image from its center
+        surf, rect = self.get_sprite_rotated(self.car_tex, rotation, offset)
+
+        screen.blit(surf, rect)
 
     def get_params(self):
         params = Sprite.static_params.copy()

@@ -32,7 +32,7 @@ class Base:
     def choose_action(self, state, agent_live = False):
         raise not NotImplementedError
 
-    def optimize_model(self, prev_state, action, state, reward, params = None, residuals = None) -> bool:
+    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None) -> bool:
         raise NotImplementedError
 
     def eval(self):
@@ -42,8 +42,7 @@ class Base:
         if agent_live:
             return
 
-        print(f"Episode {self.episode}\tStep: {step_count}\tReward: "
-              f"{self.reward_acc:.5f} and progress: {progress}")
+        print(f"Episode {self.episode}\tStep: {step_count}\tReward: {self.reward_acc:.5f} and progress: {progress}")
 
         progress_speed = progress / step_count
         if progress > self.progress_max or (progress_speed > self.progress_max / self.progress_max_step and

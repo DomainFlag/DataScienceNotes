@@ -2,6 +2,9 @@ import pygame
 import numpy as np
 import os
 import torch
+import gym
+import matplotlib.pyplot as plt
+import torchvision.transforms as transforms
 
 from PIL import Image
 from modules import Track, Sprite
@@ -60,7 +63,7 @@ def create_snapshot(surface, size = None, center = None, filename: str = "screen
                 raw_image_tensor = raw_image_tensor.unsqueeze(dim = 0)
 
             if normalize:
-                raw_image_tensor = (raw_image_tensor / 255. - IMG_MEAN) / IMG_SD
+                raw_image_tensor = raw_image_tensor / 255.
 
             return raw_image_tensor, image
 
@@ -82,7 +85,39 @@ def get_caption_renderer(window_active, clock = False):
     return renderer
 
 
-class Env:
+class BaseEnv:
+
+    ENV_ACTION_SPACE: int = -1
+
+    done: bool = False
+    exit: bool = False
+
+    def state(self, frame_active = False, params_active = False):
+        raise NotImplementedError
+
+    def step(self, action = None, sync = False, device = None):
+        raise NotImplementedError
+
+    def event_handler(self):
+        pass
+
+    def reset(self, random_reset = False, hard_reset = False):
+        raise NotImplementedError
+
+    def release(self):
+        raise NotImplementedError
+
+    def print_(self, frame):
+        plt.figure()
+        plt.imshow(frame.permute(1, 2, 0).squeeze(2).numpy(), interpolation = 'none', cmap = 'gray')
+        plt.title('Example extracted screen')
+        plt.show()
+
+
+class Env(BaseEnv):
+
+    ENV_ACTION_SPACE = 4
+
     attenuation: float = 1.0
     frame_buffer: bool
     agent_active: bool
@@ -115,9 +150,6 @@ class Env:
         # Window caption renderer
         caption_renderer = get_caption_renderer(not frame_buffer, clock = not agent_active)
 
-        # Loop until the user clicks the close button.
-        self.done = False
-
         # Create a text renderer helper function
         text_renderer = create_text_renderer(self.surface)
 
@@ -143,9 +175,12 @@ class Env:
         if params_active:
             params = self.track.get_params()
 
+        # Check if it's done or not
+        self.done = self.done or not params["alive"]
+
         return frame, img, params
 
-    def step(self, sync = False):
+    def step(self, action = None, sync = False, device = None):
         # Handle key events
         self.event_handler()
 
@@ -153,6 +188,9 @@ class Env:
         self.surface.fill(CLEAR_SCREEN)
 
         # Environment act and render
+        if action is not None:
+            self.track.sprite.act_action(action)
+
         self.track.act(self.attenuation)
         self.track.render(self.surface)
 
@@ -168,34 +206,36 @@ class Env:
             # Handle constant FPS cap
             self.clock.tick(FPS_CAP)
 
+        return None, False
+
     def event_handler(self):
         # Event queue while window is active
         if not self.frame_buffer:
 
-            # if not self.agent_active:
-            # Continuous key press
-            keys = pygame.key.get_pressed()
+            if not self.agent_active:
+                # Continuous key press
+                keys = pygame.key.get_pressed()
 
-            if keys[pygame.K_UP]:
-                self.track.sprite.movement(Sprite.acceleration * self.attenuation)
-            elif keys[pygame.K_DOWN]:
-                self.track.sprite.movement(-Sprite.acceleration * self.attenuation)
+                if keys[pygame.K_UP]:
+                    self.track.sprite.movement(Sprite.acceleration * self.attenuation)
+                elif keys[pygame.K_DOWN]:
+                    self.track.sprite.movement(-Sprite.acceleration * self.attenuation)
 
-            if keys[pygame.K_LEFT]:
-                self.track.sprite.steer(Sprite.steering * self.attenuation)
-            elif keys[pygame.K_RIGHT]:
-                self.track.sprite.steer(-Sprite.steering * self.attenuation)
+                if keys[pygame.K_LEFT]:
+                    self.track.sprite.steer(Sprite.steering * self.attenuation)
+                elif keys[pygame.K_RIGHT]:
+                    self.track.sprite.steer(-Sprite.steering * self.attenuation)
 
             # User did something
             for event in pygame.event.get():
                 # Close button is clicked
                 if event.type == pygame.QUIT:
-                    self.done = True
+                    self.exit = True
 
                 # Escape key is pressed
                 if event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
-                        self.done = True
+                        self.exit = True
                     elif event.key == pygame.K_PRINT:
                         create_snapshot(self.surface, filename = "screen.png", save = True)
                     elif event.key == pygame.K_r:
@@ -207,3 +247,70 @@ class Env:
     def release(self):
         # Be IDLE friendly
         pygame.quit()
+
+
+class Baseline(BaseEnv):
+
+    ENV_ACTION_SPACE = 2
+
+    # This is based on the code from gym.
+    screen_width = 600
+
+    def __init__(self, frame_size, frame_buffer = False, agent_active = False, track_file = None, track_cache = True,
+                 track_save = False):
+        self.env = gym.make('CartPole-v0').unwrapped
+        self.env.reset()
+        self.resizer = transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.Resize(frame_size, interpolation = Image.CUBIC),
+            transforms.Grayscale(),
+            transforms.ToTensor()
+        ])
+
+    def get_cart_location(self):
+        world_width = self.env.x_threshold * 2
+        scale = Baseline.screen_width / world_width
+
+        return int(self.env.state[0] * scale + Baseline.screen_width / 2.0)
+
+    def state(self, frame_active = False, params_active = False):
+        # transpose into torch order (CHW)
+        screen = self.env.render(mode = 'rgb_array').transpose((2, 0, 1))
+
+        # Strip off the top and bottom of the screen
+        screen = screen[:, 160:320]
+        view_width = 320
+        cart_location = self.get_cart_location()
+        if cart_location < view_width // 2:
+            slice_range = slice(view_width)
+        elif cart_location > (Baseline.screen_width - view_width // 2):
+            slice_range = slice(-view_width, None)
+        else:
+            slice_range = slice(cart_location - view_width // 2, cart_location + view_width // 2)
+
+        # Strip off the edges, so that we have a square image centered on a cart
+        screen = screen[:, :, slice_range]
+
+        # Convert to float, rescale, convert to torch tensor
+        screen = np.ascontiguousarray(screen, dtype = np.float32) / 255
+        screen = torch.from_numpy(screen)
+
+        # Resize, and add a batch dimension (BCHW)
+        frame = self.resizer(screen)
+
+        return frame, None, None
+
+    def step(self, action = None, sync = False, device = None):
+        reward, done = None, False
+        if action is not None:
+            _, reward, done, _ = self.env.step(action.item())
+
+            reward = torch.tensor(reward).to(device)
+
+        return reward, done
+
+    def reset(self, random_reset = False, hard_reset = False):
+        self.env.reset()
+
+    def release(self):
+        self.env.close()

@@ -15,10 +15,11 @@ class Model(nn.Module):
     size: tuple
     actions_count: int
 
-    def __init__(self, size: tuple, actions_count: int, hidden_size: int = 512, num_layers: int = 2):
+    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 512, num_layers: int = 2):
         super(Model, self).__init__()
 
         self.size, self.actions_count = size, actions_count
+        self.recurrent = recurrent
         self.hidden_size, self.num_layers = hidden_size, num_layers
 
         # Start of non-output layers to be shared
@@ -51,21 +52,24 @@ class Model(nn.Module):
                 // np.array(conv.stride) + 1
 
         input_size = int(features[0] * features[1] * conv.out_channels)
-        self.rnn = nn.GRU(input_size = input_size, hidden_size = self.hidden_size, num_layers = self.num_layers,
-                          batch_first = True, bidirectional = False)
+        if recurrent:
+            self.rnn = nn.GRU(input_size = input_size, hidden_size = self.hidden_size, num_layers = self.num_layers,
+                              batch_first = True, bidirectional = False)
+
+            input_size = self.hidden_size
 
         # Start of independent output layers
         # Actor - fully connected layer
         self.actor = nn.Sequential(
-            nn.Linear(self.hidden_size, 64),
-            nn.Tanh(),
+            nn.Linear(input_size, 64),
+            nn.ReLU(),
             nn.Linear(64, self.actions_count)
         )
 
         # Critic - fully connected layer
         self.critic = nn.Sequential(
-            nn.Linear(self.hidden_size, 64),
-            nn.Tanh(),
+            nn.Linear(input_size, 64),
+            nn.ReLU(),
             nn.Linear(64, 1)
         )
 
@@ -78,11 +82,15 @@ class Model(nn.Module):
         for sec in self.pipeline:
             x = sec.forward(x)
 
-        # BSxCxHxW => BxSxI
-        x, hidden_state = self.rnn(x.view(batch_size, seq_size, -1), hidden_state)
+        if self.recurrent:
+            # BSxCxHxW => BxSxI
+            x, hidden_state = self.rnn(x.view(batch_size, seq_size, -1), hidden_state)
 
-        # BxSxI => BxI | [-1]
-        x = x[:, -1, :]
+            # BxSxI => BxI | [-1]
+            x = x[:, -1, :]
+        else:
+            # BSxCxHxW => BxI | S = 1
+            x = x.view(batch_size, -1)
 
         # Policy dictates the action to be taken
         policy = F.softmax(self.actor(x), dim = 1)
@@ -95,13 +103,15 @@ class Model(nn.Module):
 
 class A2C(Base):
 
-    GAMMA = 0.99
-    ENT_START = 0.01
-    ENT_END = 0.001
-    ENT_DECAY = 2e3
-    LEARNING_RATE = 2e-4
-    VALUE_COEF = 0.5
-    STEP_MAX = 950
+    GAMMA = 0.95
+    TAU = 1.0
+    ENT_START = 0.005
+    ENT_END = 0.0001
+    ENT_DECAY = 2e2
+    LEARNING_RATE = 3e-5
+    VALUE_COEF = 0.05
+    T_STEP = 20
+    STEP_MAX = 650
 
     rewards: list = []
     values: list = []
@@ -114,7 +124,7 @@ class A2C(Base):
 
         self.entropy = torch.tensor(0., device = self.device)
         self.model = Model(self.size, self.action_count).to(self.device)
-        self.optimizer = RMSprop(self.model.parameters(), A2C.LEARNING_RATE)
+        self.optimizer = RMSprop(self.model.parameters(), lr = A2C.LEARNING_RATE)
 
     def choose_action(self, state, agent_live = False):
         if agent_live:
@@ -127,7 +137,8 @@ class A2C(Base):
 
         return action, (policy, value)
 
-    def optimize_model(self, prev_state, action, state, reward, params = None, residuals = None):
+    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None):
+
         # Unpacking residuals variables
         policy, value = residuals
 
@@ -145,31 +156,51 @@ class A2C(Base):
         if self.episode_step % A2C.episode_step_every == 0:
             print(f"\tStep: {self.episode_step}\tReward: {self.reward_acc}")
 
-        if not params['alive'] or self.episode_step == A2C.STEP_MAX:
+        if done or self.episode_step % A2C.T_STEP == 0 or self.episode_step == A2C.STEP_MAX:
+            # Discard accumulated gradients
             self.optimizer.zero_grad()
 
-            rewards = torch.zeros((len(self.rewards,))).to(self.device)
-            if self.episode_step == A2C.STEP_MAX:
+            rewards = torch.zeros((len(self.rewards),)).to(self.device)
+            estimations = torch.zeros((len(self.values,))).to(self.device)
+            if not done:
+                # Finished existing state
                 rewards[-1] = self.values[-1]
+                estimations[-1] = self.values[-1]
 
             for t in reversed(range(len(self.rewards) - 1)):
                 rewards[t] = rewards[t + 1] * A2C.GAMMA + self.rewards[t]
 
+                # Generalized advantage estimation
+                estimations[t] = self.rewards[t] + A2C.GAMMA * self.values[t + 1] - self.values[t]
+                estimations[t] = estimations[t + 1] * A2C.GAMMA * A2C.TAU + estimations[t]
+
+            # Entropy strength
+            self.entropy *= (A2C.ENT_END + (A2C.ENT_START - A2C.ENT_END) * np.exp(-1. * self.step / A2C.ENT_DECAY))
+
+            # Advantage: how good an action is
             advantages = rewards - torch.stack(self.values)
 
             # MSE error
             value_loss = A2C.VALUE_COEF * advantages.pow(2).mean()
-            policy_loss = (torch.stack(self.probs_log) * advantages).mean()
-
-            # Entropy strength
-            ent_strength = A2C.ENT_END + (A2C.ENT_START - A2C.ENT_END) * np.exp(-1. * self.step / A2C.ENT_DECAY)
+            policy_loss = (torch.stack(self.probs_log) * estimations).mean()
 
             # Gradient ascent on policy, entropy - reward and exploration | descent on value - minimize critic penalty
-            loss = value_loss - policy_loss - ent_strength * self.entropy.to(self.device)
+            loss = value_loss - policy_loss - self.entropy.to(self.device)
+
+            # Compute gradients
             loss.backward()
 
+            # Clip the weights
+            for param in self.model.parameters():
+                param.grad.data.clamp_(-1, 1)
+
+            # Adjust weights
             self.optimizer.step()
 
+            self.probs_log, self.values, self.rewards = [], [], []
+            self.entropy = torch.tensor(0., device = self.device)
+
+        if self.episode_step == A2C.STEP_MAX:
             return True
 
         return False

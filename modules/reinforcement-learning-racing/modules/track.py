@@ -21,7 +21,7 @@ class Track:
 
     TRACK_PRECISION: int = 5000
     TRACK_OFFSET: int = TRACK_PRECISION // 2
-    WIDTH_MAX: int = 60
+    WIDTH_MAX: int = 45
 
     points: list
     pivots: list
@@ -160,7 +160,7 @@ class Track:
             if not centered:
                 position = self.sprite.get_position()
             else:
-                position = np.array(state.size) / 2
+                position = np.array(state.size()[-2:]) / 2
 
             for x in [0, size[0]]:
                 for y in range(0, size[1]):
@@ -208,7 +208,7 @@ class Track:
             self.progress = Track.TRACK_PRECISION + self.progress
             self.lap -= 1
 
-        self.progress_max = max(self.lap * Track.TRACK_PRECISION + self.progress, self.progress_max)
+        self.progress_max = max(self.get_progress_total()[0], self.progress_max)
 
     def render(self, screen, direction_offset = 200, hint_direction = True, hint_boundary = True):
         # Render track
@@ -299,9 +299,9 @@ class Track:
         coord = np.array([x, y]) - size / 2
         coord_rot = np.arctan2(coord[1], coord[0]) - rot
         coord = np.array([np.cos(coord_rot), np.sin(coord_rot)]) * np.sqrt(np.dot(coord, coord))
-        coord += origin + size / 2
+        coord = (coord + origin).astype(int)
 
-        if state.getpixel((int(coord[0]), int(coord[1]))) == BLACK:
+        if state[0, coord[0], coord[1]] == 0:
             return False
 
         return True

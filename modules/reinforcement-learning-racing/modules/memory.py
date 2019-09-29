@@ -8,8 +8,8 @@ Transition = namedtuple('Transition', ('state', 'action', 'next_state', 'reward'
 
 class ReplayMemory:
 
-    MEMORY_CAPACITY: int = 15000
-    REPLAY_START: int = 3250
+    MEMORY_CAPACITY: int = 5000
+    REPLAY_START: int = 250
 
     capacity: int
     memory: List[Transition]
