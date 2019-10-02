@@ -55,7 +55,7 @@ class Track:
             self.load_track_from_dict(filename)
         else:
             # Generate pivots
-            self.points, self.pivots = pivot_map_generate(32, *track_size)
+            self.points, self.pivots = pivot_map_generate(36, *track_size)
             self.noise_seed = np.random.randint(np.iinfo(np.int32).max)
 
             np.random.seed(seed = self.noise_seed)
@@ -355,7 +355,7 @@ def point_angle(point, origin, invert = False):
     return angle, pivot_distance
 
 
-def pivot_map_generate(size, width, height, threshold_dist = 0.75, threshold_angle = 0.3):
+def pivot_map_generate(size, width, height, threshold_dist = 1.25, threshold_angle = 0.25):
     history = set()
     points = [ point_generate(history, width, height) for _ in range(size) ]
 

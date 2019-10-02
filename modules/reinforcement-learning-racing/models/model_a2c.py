@@ -15,7 +15,7 @@ class Model(nn.Module):
     size: tuple
     actions_count: int
 
-    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 512, num_layers: int = 2):
+    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 512, num_layers: int = 1):
         super(Model, self).__init__()
 
         self.size, self.actions_count = size, actions_count
@@ -40,6 +40,12 @@ class Model(nn.Module):
             nn.BatchNorm2d(32),
             nn.ReLU()
         )
+
+        # self.sec4 = nn.Sequential(
+        #     nn.Conv2d(32, 32, kernel_size = 5, stride = 2),
+        #     nn.BatchNorm2d(32),
+        #     nn.ReLU()
+        # )
 
         features, conv = np.array(size[-2:]), None
         self.pipeline = [ self.sec1, self.sec2, self.sec3 ]
@@ -111,19 +117,21 @@ class A2C(Base):
     LEARNING_RATE = 3e-5
     VALUE_COEF = 0.05
     T_STEP = 20
-    STEP_MAX = 650
+    STEP_MAX = 300
 
     rewards: list = []
     values: list = []
     probs_log: list = []
     entropy: torch.tensor
     hidden_state = None
+    recurrent: bool
 
-    def __init__(self, size, action_count):
+    def __init__(self, size, action_count, recurrent = True):
         super().__init__(size, action_count)
 
+        self.recurrent = recurrent
         self.entropy = torch.tensor(0., device = self.device)
-        self.model = Model(self.size, self.action_count).to(self.device)
+        self.model = Model(self.size, self.action_count, recurrent = self.recurrent).to(self.device)
         self.optimizer = RMSprop(self.model.parameters(), lr = A2C.LEARNING_RATE)
 
     def choose_action(self, state, agent_live = False):
@@ -137,7 +145,7 @@ class A2C(Base):
 
         return action, (policy, value)
 
-    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None):
+    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None, locker = None):
 
         # Unpacking residuals variables
         policy, value = residuals
@@ -194,11 +202,23 @@ class A2C(Base):
             for param in self.model.parameters():
                 param.grad.data.clamp_(-1, 1)
 
+            if locker is not None:
+                locker.acquire()
+
+            print("STARTED")
+
             # Adjust weights
             self.optimizer.step()
 
+            print("ENDED")
+            if locker is not None:
+                locker.release()
+
             self.probs_log, self.values, self.rewards = [], [], []
             self.entropy = torch.tensor(0., device = self.device)
+            if self.recurrent:
+                # Don't backward past graph
+                self.hidden_state = self.hidden_state.detach()
 
         if self.episode_step == A2C.STEP_MAX:
             return True

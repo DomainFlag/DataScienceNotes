@@ -92,7 +92,13 @@ class BaseEnv:
     done: bool = False
     exit: bool = False
 
-    def state(self, frame_active = False, params_active = False):
+    prev_state = None
+    curr_state = None
+    prev_frame = None
+
+    device = None
+
+    def state(self, frame_active = False, frame_diff = False, params_active = False):
         raise NotImplementedError
 
     def step(self, action = None, sync = False, device = None):
@@ -101,11 +107,31 @@ class BaseEnv:
     def event_handler(self):
         pass
 
+    def attach_device(self, device):
+        self.device = device
+
     def reset(self, random_reset = False, hard_reset = False):
-        raise NotImplementedError
+        if self.prev_frame is not None:
+            self.prev_frame = None
 
     def release(self):
         raise NotImplementedError
+
+    def edit_frame(self, frame, frame_diff = False):
+        if frame_diff:
+            if self.prev_frame is None:
+                self.prev_frame = frame
+
+            state = (frame - self.prev_frame).to(self.device)
+
+            self.prev_frame = frame
+        else:
+            state = frame.to(self.device)
+
+        self.prev_state = self.curr_state
+        self.curr_state = state
+
+        return state
 
     def print_(self, frame):
         plt.figure()
@@ -116,7 +142,7 @@ class BaseEnv:
 
 class Env(BaseEnv):
 
-    ENV_ACTION_SPACE = 4
+    ENV_ACTION_SPACE = 5
 
     attenuation: float = 1.0
     frame_buffer: bool
@@ -163,7 +189,7 @@ class Env(BaseEnv):
             self.clock = pygame.time.Clock()
             self.prev_time = pygame.time.get_ticks()
 
-    def state(self, frame_active = False, params_active = False):
+    def state(self, frame_active = False, frame_diff = False, params_active = False):
         """ Generate env states and params """
         frame, img, params = None, None, None
 
@@ -178,7 +204,7 @@ class Env(BaseEnv):
         # Check if it's done or not
         self.done = self.done or not params["alive"]
 
-        return frame, img, params
+        return self.edit_frame(frame, frame_diff = frame_diff), img, params
 
     def step(self, action = None, sync = False, device = None):
         # Handle key events
@@ -242,6 +268,8 @@ class Env(BaseEnv):
                         self.track.reset_track()
 
     def reset(self, random_reset = False, hard_reset = False):
+        super().reset()
+
         self.track.reset_track(random_reset = random_reset, hard_reset = hard_reset)
 
     def release(self):
@@ -273,7 +301,7 @@ class Baseline(BaseEnv):
 
         return int(self.env.state[0] * scale + Baseline.screen_width / 2.0)
 
-    def state(self, frame_active = False, params_active = False):
+    def state(self, frame_active = False, frame_diff = False, params_active = False):
         # transpose into torch order (CHW)
         screen = self.env.render(mode = 'rgb_array').transpose((2, 0, 1))
 
@@ -298,7 +326,7 @@ class Baseline(BaseEnv):
         # Resize, and add a batch dimension (BCHW)
         frame = self.resizer(screen)
 
-        return frame, None, None
+        return self.edit_frame(frame, frame_diff = frame_diff), None, None
 
     def step(self, action = None, sync = False, device = None):
         reward, done = None, False
@@ -310,6 +338,8 @@ class Baseline(BaseEnv):
         return reward, done
 
     def reset(self, random_reset = False, hard_reset = False):
+        super().reset()
+
         self.env.reset()
 
     def release(self):

@@ -32,7 +32,7 @@ class Base:
     def choose_action(self, state, agent_live = False):
         raise not NotImplementedError
 
-    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None) -> bool:
+    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None, locker = None) -> bool:
         raise NotImplementedError
 
     def eval(self):

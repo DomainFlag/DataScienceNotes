@@ -1,12 +1,14 @@
 import numpy as np
 import torch
+import torch.multiprocessing as mp
 import matplotlib.pyplot as plt
 
 from itertools import count
 from modules import Track, Sprite, Baseline, BaseEnv, Env
 from models import DQN, A2C, Base
+from typing import Optional
 
-RACE_VERSION = 0.814
+RACE_VERSION = 0.816
 
 
 def smoothness(x):
@@ -33,11 +35,15 @@ def rewarder_simple(prev_params: dict, params: dict) -> float:
     width_offset = min(params["width"], params["width_half"]) / params["width_half"]
 
     # Incentivize cumulative arithmetic progress | alive
-    if not width_offset > 0.125:
+    if not width_offset > 0.3:
         reward = -0.5
     else:
         if prev_params['progress_max'] < params['progress_max']:
-            reward = 0
+            p0, p1 = prev_params['progress_max'] // 25,  params['progress_max'] // 25
+            if p0 != p1:
+                reward = 1
+            else:
+                reward = 0
         else:
             reward = -0.25
 
@@ -100,6 +106,9 @@ def rewarder(prev_params: dict, params: dict) -> float:
 
 
 def agent_display_(data, title, step = 20, save = False):
+    if len(data) < step:
+        return
+
     data_steps = np.array(data[:(len(data) // step) * step]).reshape(-1, step)
 
     smooth_path = data_steps.reshape(-1, step).mean(axis = 1)
@@ -110,32 +119,83 @@ def agent_display_(data, title, step = 20, save = False):
     plt.fill_between(indices, (smooth_path - path_deviation / 2), (smooth_path + path_deviation / 2), color = 'b',
                      alpha = .05)
     plt.title(title)
-    plt.savefig(f"./static/{title}_{RACE_VERSION}.png")
+    if save:
+        plt.savefig(f"./static/{title}_{RACE_VERSION}.png")
     plt.show()
+
+
+def agent_act(env, agent, locker, episode_count, agent_live, random_reset, reset_every):
+
+    while not env.exit:
+
+        # Render initially
+        env.step(action = None, sync = False)
+
+        # Init screen
+        state, _, prev_params = env.state(frame_active = True, frame_diff = True, params_active = True)
+
+        for step in count():
+
+            # Run the action
+            action, residuals = agent.choose_action(state, agent_live)
+            reward, env.done = env.step(action, sync = False, device = agent.device)
+
+            # Get current state
+            state, _, params = env.state(frame_active = True, frame_diff = True, params_active = True)
+
+            if env.done:
+                state = None
+
+            # Optimize model
+            if not agent_live and reward is None:
+                reward = torch.tensor(rewarder_simple(prev_params, params)).to(agent.device)
+
+            if not agent_live:
+                env.done = agent.optimize_model(env.prev_state, action, state, reward, done = env.done,
+                                                residuals = residuals, locker = locker) or env.done
+
+            # Swap states
+            prev_params = params
+
+            # Reset environment and state when not alive or finished successfully a lap
+            if env.done:
+                progress = params["progress_total"][1] if params is not None else step
+
+                agent.model_new_episode(progress, step, agent_live)
+                if env.done and not agent_live:
+                    # Checking in case of explicit exit
+                    env.exit = agent.episode >= episode_count or env.exit
+
+                env.reset(random_reset = random_reset, hard_reset = agent.episode % reset_every == 0)
+                break
+
+            # Exit time
+            if env.exit:
+                break
 
 
 def racing_game(agent_active = True, agent_live = False, agent_cache = False, agent_interactive = False,
                 agent_file = "model.pt", track_cache = True, track_save = False, track_file = "track_model.npy",
-                frame_size = (150, 150), episode_count = 1000, frame_buffer = False,
-                grayscale = True, random_reset = True, reset_every = 8):
+                frame_size = (150, 150), episode_count = 300, frame_buffer = False,
+                grayscale = True, random_reset = True, multi_threading = True, num_processes = 3, asynchronous = False,
+                reset_every = 6):
     assert not (not agent_active and agent_live), "Live agent needs to be active"
     assert not (track_cache and track_save), "The track is already cached locally"
 
     print(f"Running on {RACE_VERSION} ...")
 
-    # Environment
-    env: BaseEnv = Env(frame_size, frame_buffer = frame_buffer, agent_active = agent_active, track_file = track_file,
-              track_cache = track_cache, track_save = track_save)
-
-    if not agent_active:
-        while not env.exit:
-            env.step(sync = True)
-    else:
+    agent: Optional[Base] = None
+    if agent_active:
         # Set up the agent
-        action_space = env.ENV_ACTION_SPACE
+        action_space = Baseline.ENV_ACTION_SPACE
 
         size = (1, *frame_size) if grayscale else (3, *frame_size)
-        agent: Base = A2C(size, action_space)
+        agent = A2C(size, action_space, recurrent = False)
+        if not agent_live and agent_active and multi_threading:
+            mp.set_start_method('spawn')
+
+            agent.model.share_memory()
+
         if agent_cache:
             agent.load_network_from_dict(agent_file, agent_live)
 
@@ -146,56 +206,39 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
                 agent_display_(agent.reward_history, title = "Reward")
                 agent_display_(agent.progress_history, title = "Progress")
 
-        while not env.exit:
+    # Initialize environment
+    envs = []
+    if agent_live and agent_active:
+        num_processes = 1
+    else:
+        assert(num_processes > 0)
 
-            # Render initially
-            env.step(action = None, sync = False)
+    for t in range(num_processes):
+        env: BaseEnv = Baseline(frame_size, frame_buffer = frame_buffer, agent_active = agent_active, track_file = track_file,
+                  track_cache = track_cache, track_save = track_save)
 
-            # Init screen
-            prev_screen, _, prev_params = env.state(frame_active = True, params_active = True)
-            screen = prev_screen
-            prev_state = (screen - prev_screen).to(agent.device)
+        if agent is not None:
+            env.attach_device(agent.device)
 
-            for step in count():
+        envs.append(env)
 
-                # Run the action
-                action, residuals = agent.choose_action(prev_state, agent_live)
-                reward, env.done = env.step(action, sync = False, device = agent.device)
+    # Perform agent on environment
+    if not agent_active:
+        while not envs[0].exit:
+            envs[0].step(sync = True)
+    else:
+        processes = []
+        locker = mp.Lock() if not asynchronous else None
 
-                # Get current state
-                screen, _, params = env.state(frame_active = True, params_active = True)
+        # Act agent on environment
+        for env in envs:
+            process = mp.Process(target = agent_act, args = (env, agent, locker, episode_count, agent_live, random_reset, reset_every))
+            process.start()
+            processes.append(process)
 
-                if not env.done:
-                    state = (screen - prev_screen).to(agent.device)
-                else:
-                    state = None
-
-                # Optimize model
-                if not agent_live and reward is None:
-                    reward = torch.tensor(rewarder_simple(prev_params, params)).to(agent.device)
-
-                if not agent_live:
-                    env.done = agent.optimize_model(prev_state, action, state, reward, done = env.done,
-                                                                residuals = residuals) or env.done
-
-                # Swap states
-                prev_state, prev_screen, prev_params = state, screen, params
-
-                # Reset environment and state when not alive or finished successfully a lap
-                if env.done:
-                    progress = params["progress_total"][1] if params is not None else step
-
-                    agent.model_new_episode(progress, step, agent_live)
-                    if env.done and not agent_live:
-                        # Checking in case of explicit exit
-                        env.exit = agent.episode >= episode_count or env.exit
-
-                    env.reset(random_reset = random_reset, hard_reset = agent.episode % reset_every == 0)
-                    break
-
-                # Exit time
-                if env.exit:
-                    break
+        # Wait for the processes to finish
+        for process in processes:
+            process.join()
 
         if not agent_live:
             # Save final model
@@ -206,4 +249,5 @@ def racing_game(agent_active = True, agent_live = False, agent_cache = False, ag
             agent_display_(agent.progress_history, title = "Progress", save = True)
 
     # Release env
-    env.release()
+    for t in range(num_processes):
+        envs[t].release()
