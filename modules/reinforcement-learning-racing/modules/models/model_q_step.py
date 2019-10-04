@@ -3,8 +3,10 @@ import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import modules.utils as utils
 
-from models.base import Base
+from itertools import count
+from modules.models.base import BaseAgent
 from modules import ReplayMemory, Transition
 from torch.optim.rmsprop import RMSprop
 
@@ -60,10 +62,11 @@ class Model(nn.Module):
         return self.ln(x.view(batch_size, -1))
 
 
-class DQN(Base):
+class DQN(BaseAgent):
     """ DQN and DDQN agent
     Based on https://arxiv.org/pdf/1509.06461.pdf paper
     """
+    AGENT_NAME = 'DQN'
 
     BATCH_SIZE = 64
     GAMMA = 0.999
@@ -73,8 +76,11 @@ class DQN(Base):
     TARGET_UPDATE = 2e3
     LEARNING_RATE = 4e-3
 
-    def __init__(self, size, action_count, double = True):
-        super().__init__(size, action_count)
+    reward_history: list = []
+    progress_history: list = []
+
+    def __init__(self, device, size, action_count, agent_cache = False, agent_cache_name = 'model.pt', double = False):
+        super().__init__(device, size, action_count, agent_cache, agent_cache_name)
         self.double = double
 
         self.policy = Model(size, self.action_count).to(self.device)
@@ -84,13 +90,12 @@ class DQN(Base):
         self.optimizer = RMSprop(self.policy.parameters(), DQN.LEARNING_RATE)
         self.memory = ReplayMemory()
 
-    def choose_action(self, state, agent_live = False):
+    def choose_action(self, state, training = True):
         eps_threshold = DQN.EPS_END + (DQN.EPS_START - DQN.EPS_END) * np.exp(-1. * self.step / DQN.EPS_DECAY)
 
-        if agent_live or random.random() > eps_threshold:
-            with torch.no_grad():
-                outputs = self.policy.forward(state.clone().to(self.device).unsqueeze(0))
-                action = outputs.squeeze(0).max(0).indices
+        if not training or random.random() > eps_threshold:
+            outputs = self.policy.forward(state.clone().to(self.device).unsqueeze(0))
+            action = outputs.squeeze(0).max(0).indices
         else:
             action = torch.tensor(np.random.rand(self.action_count).argmax(), dtype = torch.long).to(self.device)
 
@@ -99,7 +104,8 @@ class DQN(Base):
     def eval(self):
         self.policy.eval()
 
-    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None):
+    def model_optimize(self, prev_state, action, state, reward, done = False):
+
         # Create transition
         self.memory.push(Transition(prev_state, action, state, reward))
         self.step += 1
@@ -166,8 +172,10 @@ class DQN(Base):
         self.target.load_state_dict(checkpoint["state_model"])
         self.optimizer.load_state_dict(checkpoint["state_optimizer"])
 
-    def save_network_to_dict(self, filename, verbose = False):
+    def save_network_to_dict(self, filename = None, verbose = False):
         """ Save a network to the dict """
+        if filename is None:
+            filename = self.agent_cache_name
 
         # save network state
         checkpoint = super().save_network_to_dict(filename, verbose)
@@ -178,3 +186,55 @@ class DQN(Base):
 
         # save the network's model as the checkpoint
         torch.save(checkpoint, "./static/" + filename)
+
+    def model_train(self, envs, episode_count):
+        # A single env to be expected
+        env = envs[0]
+
+        # Initialize env
+        env.init()
+
+        while not env.exit:
+
+            # Init screen and render initially
+            state, _, _ = env.step(action = None)
+
+            for step in count():
+
+                # Run the action and get state
+                action, residuals = self.choose_action(state, training = True)
+                state, reward, params = env.step(action)
+
+                if not params['alive']:
+                    state = None
+
+                env.done = self.model_optimize(env.prev_state, action, state, reward, done = env.done) or env.done
+
+                # Reset environment and state when not alive or finished successfully a lap
+                if env.done:
+                    progress = params["progress"] if "progress" in params else step
+
+                    self.reward_history.append(self.reward_acc)
+                    self.progress_history.append(progress)
+
+                    self.model_new_episode(progress, step)
+                    if env.done:
+                        # Checking in case of explicit exit
+                        env.exit = self.episode >= episode_count or env.exit
+
+                    env.reset(self.episode)
+                    break
+
+                # Exit time
+                if env.exit:
+                    break
+
+        # Save final model
+        self.save_network_to_dict(verbose = True)
+
+        # Display training info
+        utils.show_features(self.reward_history, title = "Reward", workers = 1)
+        utils.show_features(self.progress_history, title = "Progress", workers = 1)
+
+        # Release env
+        env.release()

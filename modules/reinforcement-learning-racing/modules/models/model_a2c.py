@@ -1,17 +1,18 @@
 import numpy as np
-import random
 import torch
+import time
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.multiprocessing as mp
+import modules.utils as utils
 
-from models import Base
-from torch import distributions
+from itertools import count
+from heapq import merge
+from modules.models import BaseAgent
 from torch.optim.rmsprop import RMSprop
 
 
 class Model(nn.Module):
-    """ Based on https://arxiv.org/pdf/1602.01783.pdf paper"""
-
     size: tuple
     actions_count: int
 
@@ -48,14 +49,14 @@ class Model(nn.Module):
         # )
 
         features, conv = np.array(size[-2:]), None
-        self.pipeline = [ self.sec1, self.sec2, self.sec3 ]
+        self.pipeline = [self.sec1, self.sec2, self.sec3]
         for sec in self.pipeline:
             iter = sec.modules()
 
             _, conv = next(iter), next(iter)
 
             features = (features + np.array(conv.padding) * 2 - (np.array(conv.kernel_size) - 1) - 1) \
-                // np.array(conv.stride) + 1
+                       // np.array(conv.stride) + 1
 
         input_size = int(features[0] * features[1] * conv.out_channels)
         if recurrent:
@@ -80,7 +81,7 @@ class Model(nn.Module):
         )
 
     def forward(self, x, hidden_state):
-        assert(len(x.shape) == 5)
+        assert (len(x.shape) == 5)
         batch_size, seq_size = x.size(0), x.size(1)
 
         # BxSxCxHxW => BSxCxHxW
@@ -107,7 +108,11 @@ class Model(nn.Module):
         return policy, value, hidden_state
 
 
-class A2C(Base):
+class A2C(BaseAgent):
+    """ A2C and A3C agent
+    Based on https://arxiv.org/pdf/1602.01783.pdf paper
+    """
+    AGENT_NAME = 'A2C'
 
     GAMMA = 0.95
     TAU = 1.0
@@ -122,20 +127,37 @@ class A2C(Base):
     rewards: list = []
     values: list = []
     probs_log: list = []
+
+    progress: list = []
+
     entropy: torch.tensor
     hidden_state = None
+
     recurrent: bool
+    asynchronous: bool
 
-    def __init__(self, size, action_count, recurrent = True):
-        super().__init__(size, action_count)
+    def __init__(self, device, size, action_count, agent_cache = False, agent_cache_name = 'model.pt', recurrent = True,
+                 asynchronous = False, num_processes = 4):
+        super().__init__(device, size, action_count, agent_cache, agent_cache_name)
 
-        self.recurrent = recurrent
+        # if agent_cache:
+        #     self.load_network_from_dict(agent_cache_name, args.agent_live)
+        #
+        #     if args.agent_interactive:
+        #         agent.eval()
+        #
+        #         # Display training info
+        #         agent_display_(agent.reward_history, title = "Reward")
+        #         agent_display_(agent.progress_history, title = "Progress")
+
+        self.num_processes = num_processes
+        self.recurrent, self.asynchronous = recurrent, asynchronous
         self.entropy = torch.tensor(0., device = self.device)
         self.model = Model(self.size, self.action_count, recurrent = self.recurrent).to(self.device)
         self.optimizer = RMSprop(self.model.parameters(), lr = A2C.LEARNING_RATE)
 
-    def choose_action(self, state, agent_live = False):
-        if agent_live:
+    def choose_action(self, state, training = False):
+        if not training:
             with torch.no_grad():
                 policy, value, self.hidden_state = self.model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
         else:
@@ -145,7 +167,10 @@ class A2C(Base):
 
         return action, (policy, value)
 
-    def optimize_model(self, prev_state, action, state, reward, done = False, residuals = None, locker = None):
+    def eval(self):
+        self.model.eval()
+
+    def model_optimize(self, prev_state, action, state, reward, done = False, residuals = None, locker = None):
 
         # Unpacking residuals variables
         policy, value = residuals
@@ -169,7 +194,7 @@ class A2C(Base):
             self.optimizer.zero_grad()
 
             rewards = torch.zeros((len(self.rewards),)).to(self.device)
-            estimations = torch.zeros((len(self.values,))).to(self.device)
+            estimations = torch.zeros((len(self.values, ))).to(self.device)
             if not done:
                 # Finished existing state
                 rewards[-1] = self.values[-1]
@@ -202,22 +227,20 @@ class A2C(Base):
             for param in self.model.parameters():
                 param.grad.data.clamp_(-1, 1)
 
-            if locker is not None:
+            if not self.asynchronous:
                 locker.acquire()
-
-            print("STARTED")
 
             # Adjust weights
             self.optimizer.step()
 
-            print("ENDED")
-            if locker is not None:
+            if not self.asynchronous:
                 locker.release()
 
             self.probs_log, self.values, self.rewards = [], [], []
             self.entropy = torch.tensor(0., device = self.device)
+
+            # Don't backward past graph
             if self.recurrent:
-                # Don't backward past graph
                 self.hidden_state = self.hidden_state.detach()
 
         if self.episode_step == A2C.STEP_MAX:
@@ -225,11 +248,10 @@ class A2C(Base):
 
         return False
 
-    def eval(self):
-        self.model.eval()
+    def model_new_episode(self, progress, step_count):
+        self.progress.append((time.time(), progress, self.reward_acc))
 
-    def model_new_episode(self, progress, step_count, agent_live):
-        super().model_new_episode(progress, step_count, agent_live)
+        super().model_new_episode(progress, step_count)
 
         self.hidden_state = None
         self.entropy = torch.tensor(0., device = self.device)
@@ -243,8 +265,10 @@ class A2C(Base):
         self.model.load_state_dict(checkpoint["state_model"])
         self.optimizer.load_state_dict(checkpoint["state_optimizer"])
 
-    def save_network_to_dict(self, filename, verbose = False):
+    def save_network_to_dict(self, filename = None, verbose = False):
         """ Save a network to the dict """
+        if filename is None:
+            filename = self.agent_cache_name
 
         # save network state
         checkpoint = super().save_network_to_dict(filename, verbose)
@@ -255,3 +279,86 @@ class A2C(Base):
 
         # save the network's model as the checkpoint
         torch.save(checkpoint, "./static/" + filename)
+
+    def model_train(self, envs, episode_count):
+        # Spawn instead of fork
+        mp.set_start_method('spawn')
+
+        # Share the agent model memory
+        self.model.share_memory()
+
+        # Perform agent on environment
+        processes, results = mp.Pool(len(envs)), []
+
+        # Initialize a lock for progress synchronization
+        locker = mp.Manager().Lock()
+
+        # Act agent on environment
+        for env in envs:
+            results.append(processes.apply_async(target, (env, self, episode_count, locker)))
+
+        processes.close()
+
+        # Sync workers with the main process
+        processes.join()
+
+        # Agent progress
+        progress = merge(*[ res.get() for res in results ])
+        self.progress_history, self.reward_history = list(zip(*progress))[1:]
+
+        # Display training info
+        utils.show_features(self.reward_history, title = "Reward", workers = self.num_processes, save = True)
+        utils.show_features(self.progress_history, title = "Progress", workers = self.num_processes, save = True)
+
+        # Save final model
+        self.save_network_to_dict(self.agent_cache_name, verbose = True)
+
+        # Release env
+        for env in envs:
+            env.release()
+
+
+# Training function
+def target(env, agent, episode_count, locker):
+
+    # Initialize env
+    env.init()
+
+    while not env.exit:
+
+        # Init screen and render initially
+        state, _, _ = env.step(action = None)
+
+        for step in count():
+
+            # Run the action and get state
+            action, residuals = agent.choose_action(state, training = True)
+            state, reward, params = env.step(action)
+
+            if not params['alive']:
+                state = None
+
+            flag = agent.model_optimize(env.prev_state, action, state, reward, done = not params['alive'],
+                                            residuals = residuals, locker = locker)
+
+            if flag or not params['alive']:
+                env.done = True
+
+            # Reset environment and state when not alive or finished successfully a lap
+            if env.done:
+                progress = params["progress"] if "progress" in params else step
+
+                agent.model_new_episode(progress, step)
+                if env.done:
+                    # Checking in case of explicit exit
+                    env.exit = agent.episode >= episode_count or env.exit
+
+                env.reset(agent.episode)
+                break
+
+            # Exit time
+            if env.exit:
+                break
+
+    return agent.progress
+

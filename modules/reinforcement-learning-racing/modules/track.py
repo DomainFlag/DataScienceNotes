@@ -19,7 +19,7 @@ ROAD_HINT = (143, 152, 86)
 
 class Track:
 
-    TRACK_PRECISION: int = 5000
+    TRACK_PRECISION: int = 10000
     TRACK_OFFSET: int = TRACK_PRECISION // 2
     WIDTH_MAX: int = 45
 
@@ -208,7 +208,7 @@ class Track:
             self.progress = Track.TRACK_PRECISION + self.progress
             self.lap -= 1
 
-        self.progress_max = max(self.get_progress_total()[0], self.progress_max)
+        self.progress_max = max(self.get_progress(), self.progress_max)
 
     def render(self, screen, direction_offset = 200, hint_direction = True, hint_boundary = True):
         # Render track
@@ -229,12 +229,7 @@ class Track:
             pygame.draw.circle(screen, RED, self.get_track_position(self.index).astype(int), 2)
 
     def get_progress(self):
-        return self.progress, self.progress / self.TRACK_PRECISION * 100
-
-    def get_progress_total(self):
-        progress_total = self.lap * Track.TRACK_PRECISION + self.progress
-
-        return progress_total, progress_total / Track.TRACK_PRECISION * 100
+        return self.lap * Track.TRACK_PRECISION + self.progress
 
     def get_params(self, state = None, centered = False):
         params = Track.static_params.copy()
@@ -246,7 +241,6 @@ class Track:
             "start_index": self.start_index,
             "lap": self.lap,
             "progress": self.get_progress(),
-            "progress_total": self.get_progress_total(),
             "progress_max": self.progress_max,
             "alive": self.is_alive(state, centered),
             "angle": self.get_metadata(self.index, offset = 5)[-1]
