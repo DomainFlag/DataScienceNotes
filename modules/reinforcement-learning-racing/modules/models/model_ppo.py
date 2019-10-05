@@ -9,7 +9,7 @@ import modules.utils as utils
 from itertools import count
 from heapq import merge
 from modules.models import BaseAgent
-from torch.optim.rmsprop import RMSprop
+from torch.optim import Adam
 
 
 class Model(nn.Module):
@@ -43,7 +43,7 @@ class Model(nn.Module):
         )
 
         features, conv = np.array(size[-2:]), None
-        self.pipeline = [self.sec1, self.sec2, self.sec3, self.sec4]
+        self.pipeline = [self.sec1, self.sec2, self.sec3]
         for sec in self.pipeline:
             iter = sec.modules()
 
@@ -102,67 +102,72 @@ class Model(nn.Module):
         return policy, value, hidden_state
 
 
-class A2C(BaseAgent):
-    """ A2C and A3C agent
-    Based on https://arxiv.org/pdf/1602.01783.pdf paper
+class PPO(BaseAgent):
+    """ PPO agent
+    Based on https://arxiv.org/pdf/1707.06347.pdf paper
     """
-    AGENT_NAME = 'A2C'
+    AGENT_NAME = 'PPO'
 
     GAMMA = 0.95
     TAU = 0.95
-    ENT_START = 0.05
-    ENT_END = 0.001
-    ENT_DECAY = 2e3
-    LEARNING_RATE = 7e-5
-    VALUE_COEF = 0.01
-    T_STEP = 128
-    STEP_MAX = 1500
+    ENT_START = 0.5
+    ENT_END = 0.1
+    ENT_DECAY = 2e2
+    LEARNING_RATE = 3e-4
+    VALUE_COEF = 0.5
+    CLIP_ALPHA = 0.2
+    EPOCHS_COUNT = 10
+    T_STEP = 512
+    STEP_MAX = 300
 
+    states: list = []
+    lives: list = []
+    actions: list = []
     rewards: list = []
     values: list = []
     probs_log: list = []
-
     progress: list = []
 
-    entropy: torch.tensor
     hidden_state = None
 
     recurrent: bool
     asynchronous: bool
 
-    def __init__(self, device, size, action_count, agent_cache = False, agent_cache_name = 'model.pt', recurrent = True,
-                 asynchronous = False, num_processes = 4):
+    def __init__(self, device, size, action_count, agent_cache = False, agent_cache_name = 'model.pt', recurrent = False,
+                 num_processes = 4):
         super().__init__(device, size, action_count, agent_cache, agent_cache_name)
 
-        self.num_processes = num_processes
-        self.recurrent, self.asynchronous = recurrent, asynchronous
-        self.entropy = torch.tensor(0., device = self.device)
-        self.model = Model(self.size, self.action_count, recurrent = self.recurrent).to(self.device)
-        self.optimizer = RMSprop(self.model.parameters(), lr = A2C.LEARNING_RATE)
+        self.recurrent, self.num_processes = recurrent, num_processes
 
-    def choose_action(self, state, training = False):
+        self.policy = Model(self.size, self.action_count, recurrent = self.recurrent).to(self.device)
+        self.optimizer = Adam(self.policy.parameters(), lr = PPO.LEARNING_RATE)
+
+        self.target = Model(self.size, self.action_count, recurrent = self.recurrent).to(self.device)
+        self.target.load_state_dict(self.policy.state_dict())
+
+    def choose_action(self, state, model = None, training = False):
         if not training:
             with torch.no_grad():
-                policy, value, self.hidden_state = self.model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
+                policy, value, self.hidden_state = model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
         else:
-            policy, value, self.hidden_state = self.model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
+            policy, value, self.hidden_state = model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
 
         action = policy.multinomial(1).data[0, 0]
 
         return action, (policy, value)
 
     def eval(self):
-        self.model.eval()
+        self.policy.eval()
 
     def model_optimize(self, prev_state, action, state, reward, done = False, residuals = None, locker = None):
 
         # Unpacking residuals variables
         policy, value = residuals
 
-        prob_log = torch.log(policy[0])
-        self.probs_log.append(prob_log[action])
-        self.entropy += -torch.sum(policy[0] * prob_log).to(self.device)
-
+        self.probs_log.append(torch.log(policy[0][action]))
+        self.states.append(prev_state)
+        self.actions.append(action)
+        self.lives.append(done)
         self.values.append(value[0])
         self.rewards.append(reward)
 
@@ -170,64 +175,93 @@ class A2C(BaseAgent):
         self.episode_step += 1
         self.reward_acc += reward.item()
 
-        if self.episode_step % A2C.episode_step_every == 0:
+        if self.episode_step % PPO.episode_step_every == 0:
             print(f"\tStep: {self.episode_step}\tReward: {self.reward_acc}")
 
-        if done or self.episode_step % A2C.T_STEP == 0 or self.episode_step == A2C.STEP_MAX:
-            # Discard accumulated gradients
-            self.optimizer.zero_grad()
+        # Lock processes
+        locker.acquire()
+
+        if self.step % PPO.T_STEP == 0:
+            # Optimization step
+            optim_step = self.step // PPO.T_STEP
 
             rewards = torch.zeros((len(self.rewards),)).to(self.device)
-            estimations = torch.zeros((len(self.values, ))).to(self.device)
             if not done:
                 # Finished existing state
                 rewards[-1] = self.values[-1]
-                estimations[-1] = self.values[-1]
 
             for t in reversed(range(len(self.rewards) - 1)):
-                rewards[t] = rewards[t + 1] * A2C.GAMMA + self.rewards[t]
-
-                # Generalized advantage estimation
-                estimations[t] = self.rewards[t] + A2C.GAMMA * self.values[t + 1] - self.values[t]
-                estimations[t] = estimations[t + 1] * A2C.GAMMA * A2C.TAU + estimations[t]
+                if self.lives[t]:
+                    # Finished existing state
+                    rewards[t] = self.values[t]
+                else:
+                    rewards[t] = rewards[t + 1] * PPO.GAMMA + self.rewards[t]
 
             # Entropy strength
-            self.entropy *= (A2C.ENT_END + (A2C.ENT_START - A2C.ENT_END) * np.exp(-1. * self.step / A2C.ENT_DECAY))
+            entropy_strength = (PPO.ENT_END + (PPO.ENT_START - PPO.ENT_END) * np.exp(-1. * optim_step / PPO.ENT_DECAY))
 
-            # Advantage: how good an action is
-            advantages = rewards - torch.stack(self.values)
+            # Optimize policy for K epochs:
+            for _ in range(PPO.EPOCHS_COUNT):
 
-            # MSE error
-            value_loss = A2C.VALUE_COEF * advantages.pow(2).mean()
-            policy_loss = (torch.stack(self.probs_log) * estimations).mean()
+                # Acc policy
+                policy_values = []
+                policy_probs_log = []
+                entropy = []
 
-            # Gradient ascent on policy, entropy - reward and exploration | descent on value - minimize critic penalty
-            loss = value_loss - policy_loss - self.entropy.to(self.device)
+                for index, state in enumerate(self.states):
+                    # Run the action
+                    _, (policy, value) = self.choose_action(state, model = self.policy, training = True)
+                    policy_prob_log = torch.log(policy[0])
 
-            # Compute gradients
-            loss.backward()
+                    policy_probs_log.append(policy_prob_log[self.actions[index]])
+                    policy_values.append(value)
 
-            # Clip the weights
-            for param in self.model.parameters():
-                param.grad.data.clamp_(-1, 1)
+                    # Accumulate entropy
+                    entropy.append(-torch.sum(policy[0] * policy_prob_log).to(self.device))
 
-            if not self.asynchronous:
-                locker.acquire()
+                # Compute Entropy
+                entropy = torch.stack(entropy).mean() * entropy_strength
 
-            # Adjust weights
-            self.optimizer.step()
+                # Advantage: how good the actions were
+                advantages = rewards - torch.stack(policy_values)
 
-            if not self.asynchronous:
-                locker.release()
+                # MSE error
+                value_loss = PPO.VALUE_COEF * advantages.pow(2).mean()
 
+                # Compute the surrogate objective loss
+                ratio = torch.exp(torch.stack(policy_probs_log) - torch.stack(self.probs_log))
+                objective_loss = ratio * advantages
+                objective_loss_clipped = torch.clamp(ratio, 1 - PPO.CLIP_ALPHA, 1 + PPO.CLIP_ALPHA) * advantages
+
+                # Compute loss
+                policy_loss = torch.min(objective_loss, objective_loss_clipped).mean()
+
+                # Gradient ascent on policy, entropy - reward and exploration | descent on value - critic penalty
+                loss = value_loss - policy_loss - entropy
+
+                # Discard accumulated gradients
+                self.optimizer.zero_grad()
+
+                # Compute gradients
+                loss.backward()
+
+                # Adjust weights
+                self.optimizer.step()
+
+            # Update target with new policy states
+            self.target.load_state_dict(self.policy.state_dict())
+
+            self.states, self.lives, self.actions = [], [], []
             self.probs_log, self.values, self.rewards = [], [], []
-            self.entropy = torch.tensor(0., device = self.device)
 
             # Don't backward past graph
             if self.recurrent:
                 self.hidden_state = self.hidden_state.detach()
 
-        if self.episode_step == A2C.STEP_MAX:
+        # Continue other processes
+        locker.release()
+
+        if self.episode_step == PPO.STEP_MAX:
             return True
 
         return False
@@ -238,15 +272,14 @@ class A2C(BaseAgent):
         super().model_new_episode(progress, step_count)
 
         self.hidden_state = None
-        self.entropy = torch.tensor(0., device = self.device)
-        self.probs_log, self.values, self.rewards = [], [], []
 
     def load_network_from_dict(self, filename, agent_live, verbose = True):
         """ Load a network from the dict """
         checkpoint = super().load_network_from_dict(filename, agent_live, verbose)
 
         # load network state
-        self.model.load_state_dict(checkpoint["state_model"])
+        self.policy.load_state_dict(checkpoint["state_model"])
+        self.target.load_state_dict(checkpoint["state_model"])
         self.optimizer.load_state_dict(checkpoint["state_optimizer"])
 
     def save_network_to_dict(self, filename = None, verbose = False):
@@ -257,7 +290,7 @@ class A2C(BaseAgent):
         # save network state
         checkpoint = super().save_network_to_dict(filename, verbose)
         checkpoint.update({
-            'state_model': self.model.state_dict(),
+            'state_model': self.policy.state_dict(),
             'state_optimizer': self.optimizer.state_dict()
         })
 
@@ -273,7 +306,8 @@ class A2C(BaseAgent):
         mp.set_start_method('spawn')
 
         # Share the agent model memory
-        self.model.share_memory()
+        self.policy.share_memory()
+        self.target.share_memory()
 
         # Perform agent on environment
         processes, results = mp.Pool(len(envs)), []
@@ -291,7 +325,7 @@ class A2C(BaseAgent):
         processes.join()
 
         # Agent progress
-        progress = merge(*[ res.get() for res in results ])
+        progress = merge(*[res.get() for res in results])
         self.progress_history, self.reward_history = list(zip(*progress))[1:]
 
         # Display training info
@@ -301,14 +335,9 @@ class A2C(BaseAgent):
         # Save final model
         self.save_network_to_dict(self.agent_cache_name, verbose = True)
 
-        # Release env
-        for env in envs:
-            env.release()
-
 
 # Training function
 def target(env, agent, episode_count, locker):
-
     # Initialize env
     env.init()
 
@@ -320,14 +349,14 @@ def target(env, agent, episode_count, locker):
         for step in count():
 
             # Run the action and get state
-            action, residuals = agent.choose_action(state, training = True)
+            action, residuals = agent.choose_action(state, model = agent.target, training = False)
             state, reward, params = env.step(action)
 
             if not params['alive']:
                 state = None
 
             flag = agent.model_optimize(env.prev_state, action, state, reward, done = not params['alive'],
-                                            residuals = residuals, locker = locker)
+                                        residuals = residuals, locker = locker)
 
             if flag or not params['alive']:
                 env.done = True
@@ -348,5 +377,7 @@ def target(env, agent, episode_count, locker):
             if env.exit:
                 break
 
-    return agent.progress
+    # Release env
+    env.release()
 
+    return agent.progress

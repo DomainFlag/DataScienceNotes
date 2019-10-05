@@ -14,6 +14,7 @@ WHITE = (255, 255, 255)
 TRANSPARENT = (0, 0, 0, 0)
 
 ROAD_TRACK = (50, 50, 50)
+ROAD_BORDER = (191, 194, 191)
 ROAD_HINT = (143, 152, 86)
 
 
@@ -22,6 +23,7 @@ class Track:
     TRACK_PRECISION: int = 10000
     TRACK_OFFSET: int = TRACK_PRECISION // 2
     WIDTH_MAX: int = 45
+    WIDTH_MAX_OFFSET: int = 8
 
     points: list
     pivots: list
@@ -349,7 +351,7 @@ def point_angle(point, origin, invert = False):
     return angle, pivot_distance
 
 
-def pivot_map_generate(size, width, height, threshold_dist = 1.25, threshold_angle = 0.25):
+def pivot_map_generate(size, width, height, threshold_dist = 2.25, threshold_angle = 0.45):
     history = set()
     points = [ point_generate(history, width, height) for _ in range(size) ]
 
@@ -465,10 +467,19 @@ def track_line_render(step, offset):
             pos1 = pos1.copy() + track_offset
 
             if pos2 is not None:
+                draw_line_aliased(screen, [pos1, pos2], ROAD_BORDER, width = Track.WIDTH_MAX + Track.WIDTH_MAX_OFFSET)
+
+            pos2 = pos1
+
+        pos2 = None
+        for index, pos1 in enumerate(track_data):
+            pos1 = pos1.copy() + track_offset
+
+            if pos2 is not None:
                 draw_line_aliased(screen, [pos1, pos2], ROAD_TRACK, width = Track.WIDTH_MAX)
 
-                if index % step > offset:
-                    draw_line_aliased(screen, [pos1, pos2], ROAD_HINT, width = 2, length = 4.0)
+            if index % step > offset:
+                draw_line_aliased(screen, [pos1, pos2], ROAD_HINT, width = 2, length = 4.0)
 
             pos2 = pos1
 

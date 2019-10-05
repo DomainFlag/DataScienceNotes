@@ -35,3 +35,19 @@ def show_features(features, title, workers = 1, step = 20, save = False, version
         plt.savefig(f"./static/{title}_{version}.png")
 
     plt.show()
+
+
+def smoothness(x):
+    """ X value is expected to be normalized - [0, 1] """
+    assert 0.0 <= x <= 1.0, "x < 0 or x > 1.0, x - %s" % (x,)
+
+    return (np.log(x + 1.0) / np.log(2)) ** (1 / 2)
+
+
+def compute_min_offset(a, b, cycle):
+    offset = a - b
+
+    if abs(offset) < cycle - abs(offset):
+        return offset
+    else:
+        return cycle * (-1 if a > b else 1) + offset

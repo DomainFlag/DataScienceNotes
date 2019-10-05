@@ -17,7 +17,7 @@ class Sprite:
     STEERING_SPACE_COUNT = 2
 
     acceleration: float = 0.05
-    steering: float = 0.035
+    steering: float = 0.1
     attenuation: float = 0.25
 
     static_params: dict = {

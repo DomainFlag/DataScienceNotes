@@ -14,6 +14,9 @@ class Baseline(BaseEnv):
     # This is based on the code from gym.
     screen_width = 600
 
+    # Environment
+    env = None
+
     def __init__(self, device, frame_size, frame_diff):
         super().__init__(device, frame_diff)
 

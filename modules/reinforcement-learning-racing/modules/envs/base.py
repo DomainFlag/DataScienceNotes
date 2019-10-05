@@ -25,6 +25,7 @@ class BaseEnv:
         pass
 
     def run(self):
+        self.init()
         while not self.exit:
             self.step(action = None, sync = True)
 

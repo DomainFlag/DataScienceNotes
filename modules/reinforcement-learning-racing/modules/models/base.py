@@ -59,10 +59,10 @@ class BaseAgent:
 
         checkpoint = torch.load(buffer, map_location = self.device.type)
 
-        if not training:
-            self.episode = checkpoint["episode"]
-            self.reward_history = checkpoint["reward_history"]
-            self.progress_history = checkpoint["progress_history"]
+        # if not training:
+        #     self.episode = checkpoint["episode"]
+        #     self.reward_history = checkpoint["reward_history"]
+        #     self.progress_history = checkpoint["progress_history"]
 
         return checkpoint
 

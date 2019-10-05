@@ -2,6 +2,7 @@ import pygame
 import numpy as np
 import os
 import torch
+import modules.utils as utils
 
 from PIL import Image
 from modules.envs import BaseEnv
@@ -79,16 +80,22 @@ def create_snapshot(surface, size = None, center = None, filename: str = "screen
 
 def rewarder(params: dict) -> float:
     if not params["alive"]:
-        return 1e-5
+        return -1
+
+    reward = 0
 
     # Keep center
     width_offset = min(params["width"], params["width_half"]) / params["width_half"]
+    if not width_offset > 0.4:
+        reward -= 5e-1
 
-    # Incentivize cumulative arithmetic progress | alive
-    if not width_offset > 0.3:
-        reward = 1e-3
-    else:
-        reward = params['progress']
+    # Keep the line direction
+    offset_angle = utils.compute_min_offset(params["angle"], params["rot"], np.pi * 2)
+    if abs(offset_angle) > 0.25:
+        reward -= 5e-1
+
+    if reward == 0:
+        reward = 1
 
     return float(reward)
 
@@ -230,7 +237,7 @@ class Racing(BaseEnv):
     def reset(self, episode):
         super().reset(episode)
 
-        self.track.reset_track(random_reset = self.track_random_reset, hard_reset = episode % self.track_random_reset_every)
+        self.track.reset_track(random_reset = self.track_random_reset, hard_reset = episode % self.track_random_reset_every == 0)
 
     def release(self):
         # Be IDLE friendly

@@ -1,14 +1,14 @@
 import torch
 
 from modules.envs import Baseline, Racing, BaseEnv
-from modules.models import DQN, A2C, BaseAgent
+from modules.models import DQN, A2C, PPO, BaseAgent
 from typing import Optional, Type
 
 RACE_VERSION = 0.817
 
 
 def racing_game(args):
-    assert not (not args.agent_active and not args.agent_train), 'Live agent needs to be active'
+    # assert not (not args.agent_active and not args.agent_train), 'Live agent needs to be active'
     assert not (args.track_cache and args.track_save), 'The track is already cached locally'
 
     print(f'Running on {RACE_VERSION} ...')
@@ -57,7 +57,8 @@ def racing_game(args):
             agent_model = A2C(device, args.frame_shape, action_space, args.agent_cache, args.agent_cache_name,
                               args.model_recurrent, asynchronous, processes_count)
         elif args.agent_name == 'PPO':
-            raise NotImplementedError
+            agent_model = PPO(device, args.frame_shape, action_space, args.agent_cache, args.agent_cache_name,
+                              args.model_recurrent, processes_count)
 
         assert agent_model is not None, 'Agent model is invalid'
 

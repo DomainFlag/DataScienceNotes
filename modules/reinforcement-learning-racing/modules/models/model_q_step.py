@@ -188,6 +188,10 @@ class DQN(BaseAgent):
         torch.save(checkpoint, "./static/" + filename)
 
     def model_train(self, envs, episode_count):
+        # Load network
+        if self.agent_cache:
+            self.load_network_from_dict(self.agent_cache_name, False)
+
         # A single env to be expected
         env = envs[0]
 
