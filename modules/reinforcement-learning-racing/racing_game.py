@@ -4,7 +4,7 @@ from modules.envs import Baseline, Racing, BaseEnv
 from modules.models import DQN, A2C, PPO, BaseAgent
 from typing import Optional, Type
 
-RACE_VERSION = 0.817
+RACE_VERSION = 0.821
 
 
 def racing_game(args):

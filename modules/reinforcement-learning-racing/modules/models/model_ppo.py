@@ -9,14 +9,15 @@ import modules.utils as utils
 from itertools import count
 from heapq import merge
 from modules.models import BaseAgent
-from torch.optim import Adam
+from torch.optim.adam import Adam
 
 
 class Model(nn.Module):
+
     size: tuple
     actions_count: int
 
-    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 768, num_layers: int = 2):
+    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 1024, num_layers: int = 1):
         super(Model, self).__init__()
 
         self.size, self.actions_count = size, actions_count
@@ -25,19 +26,19 @@ class Model(nn.Module):
 
         # Start of non-output layers to be shared
         self.sec1 = nn.Sequential(
-            nn.Conv2d(size[0], 8, kernel_size = 5, stride = 2),
-            nn.BatchNorm2d(8),
+            nn.Conv2d(size[0], 32, kernel_size = 3, stride = 2),
+            nn.BatchNorm2d(32),
             nn.ReLU()
         )
 
         self.sec2 = nn.Sequential(
-            nn.Conv2d(8, 16, kernel_size = 5, stride = 2),
-            nn.BatchNorm2d(16),
+            nn.Conv2d(32, 32, kernel_size = 3, stride = 2),
+            nn.BatchNorm2d(32),
             nn.ReLU()
         )
 
         self.sec3 = nn.Sequential(
-            nn.Conv2d(16, 32, kernel_size = 5, stride = 2),
+            nn.Conv2d(32, 32, kernel_size = 3, stride = 2),
             nn.BatchNorm2d(32),
             nn.ReLU()
         )
@@ -63,14 +64,14 @@ class Model(nn.Module):
         # Actor - fully connected layer
         self.actor = nn.Sequential(
             nn.Linear(input_size, 64),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(64, self.actions_count)
         )
 
         # Critic - fully connected layer
         self.critic = nn.Sequential(
             nn.Linear(input_size, 64),
-            nn.ReLU(),
+            nn.Tanh(),
             nn.Linear(64, 1)
         )
 
@@ -108,26 +109,26 @@ class PPO(BaseAgent):
     """
     AGENT_NAME = 'PPO'
 
-    GAMMA = 0.95
+    GAMMA = 0.99
     TAU = 0.95
-    ENT_START = 0.5
-    ENT_END = 0.1
+    ENT_START = 0.01
+    ENT_END = 0.001
     ENT_DECAY = 2e2
     LEARNING_RATE = 3e-4
     VALUE_COEF = 0.5
     CLIP_ALPHA = 0.2
-    EPOCHS_COUNT = 10
-    T_STEP = 512
-    STEP_MAX = 300
+    EPOCHS_COUNT = 6
+    T_STEP = 600
+    STEP_MAX = 2250
 
     states: list = []
     lives: list = []
     actions: list = []
     rewards: list = []
-    values: list = []
     probs_log: list = []
     progress: list = []
 
+    prev_hidden_state = None
     hidden_state = None
 
     recurrent: bool
@@ -145,7 +146,14 @@ class PPO(BaseAgent):
         self.target = Model(self.size, self.action_count, recurrent = self.recurrent).to(self.device)
         self.target.load_state_dict(self.policy.state_dict())
 
+        # Load network
+        if self.agent_cache:
+            self.load_network_from_dict(self.agent_cache_name, False)
+
     def choose_action(self, state, model = None, training = False):
+        if model is None:
+            model = self.policy
+
         if not training:
             with torch.no_grad():
                 policy, value, self.hidden_state = model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
@@ -164,11 +172,13 @@ class PPO(BaseAgent):
         # Unpacking residuals variables
         policy, value = residuals
 
+        if done:
+            reward = torch.tensor(0).to(self.device)
+
         self.probs_log.append(torch.log(policy[0][action]))
         self.states.append(prev_state)
         self.actions.append(action)
         self.lives.append(done)
-        self.values.append(value[0])
         self.rewards.append(reward)
 
         self.step += 1
@@ -182,42 +192,51 @@ class PPO(BaseAgent):
         locker.acquire()
 
         if self.step % PPO.T_STEP == 0:
-            # Optimization step
-            optim_step = self.step // PPO.T_STEP
-
+            # Discounted rewards
             rewards = torch.zeros((len(self.rewards),)).to(self.device)
-            if not done:
-                # Finished existing state
-                rewards[-1] = self.values[-1]
-
+            rewards[-1] = self.rewards[-1]
             for t in reversed(range(len(self.rewards) - 1)):
                 if self.lives[t]:
                     # Finished existing state
-                    rewards[t] = self.values[t]
+                    rewards[t] = self.rewards[t]
                 else:
                     rewards[t] = rewards[t + 1] * PPO.GAMMA + self.rewards[t]
 
+            # Rewards normalization
+            rewards = (rewards - rewards.mean()) / rewards.std()
+
             # Entropy strength
-            entropy_strength = (PPO.ENT_END + (PPO.ENT_START - PPO.ENT_END) * np.exp(-1. * optim_step / PPO.ENT_DECAY))
+            entropy_strength = (PPO.ENT_END + (PPO.ENT_START - PPO.ENT_END) * np.exp(-1. * self.episode / PPO.ENT_DECAY))
 
             # Optimize policy for K epochs:
             for _ in range(PPO.EPOCHS_COUNT):
+
+                # Reset hidden state
+                if self.recurrent:
+                    if self.prev_hidden_state is not None:
+                        self.hidden_state = self.prev_hidden_state.clone()
+                    else:
+                        self.hidden_state = None
 
                 # Acc policy
                 policy_values = []
                 policy_probs_log = []
                 entropy = []
 
-                for index, state in enumerate(self.states):
+                for index, (state, done) in enumerate(zip(self.states, self.lives)):
                     # Run the action
                     _, (policy, value) = self.choose_action(state, model = self.policy, training = True)
                     policy_prob_log = torch.log(policy[0])
 
                     policy_probs_log.append(policy_prob_log[self.actions[index]])
-                    policy_values.append(value)
+                    policy_values.append(value[0])
 
                     # Accumulate entropy
                     entropy.append(-torch.sum(policy[0] * policy_prob_log).to(self.device))
+
+                    # Reset if terminal
+                    if self.recurrent and done:
+                        self.hidden_state = None
 
                 # Compute Entropy
                 entropy = torch.stack(entropy).mean() * entropy_strength
@@ -245,6 +264,9 @@ class PPO(BaseAgent):
                 # Compute gradients
                 loss.backward()
 
+                # Normalize gradients
+                nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
+
                 # Adjust weights
                 self.optimizer.step()
 
@@ -252,11 +274,14 @@ class PPO(BaseAgent):
             self.target.load_state_dict(self.policy.state_dict())
 
             self.states, self.lives, self.actions = [], [], []
-            self.probs_log, self.values, self.rewards = [], [], []
+            self.probs_log, self.rewards = [], []
 
             # Don't backward past graph
             if self.recurrent:
-                self.hidden_state = self.hidden_state.detach()
+                if self.hidden_state is not None:
+                    self.hidden_state = self.hidden_state.detach()
+
+                self.prev_hidden_state = self.hidden_state
 
         # Continue other processes
         locker.release()
@@ -298,12 +323,7 @@ class PPO(BaseAgent):
         torch.save(checkpoint, "./static/" + filename)
 
     def model_train(self, envs, episode_count):
-        # Load network
-        if self.agent_cache:
-            self.load_network_from_dict(self.agent_cache_name, False)
-
-        # Spawn instead of fork
-        mp.set_start_method('spawn')
+        mp.set_start_method('spawn', force = True)
 
         # Share the agent model memory
         self.policy.share_memory()
@@ -375,6 +395,7 @@ def target(env, agent, episode_count, locker):
 
             # Exit time
             if env.exit:
+                print(f'Training complete: {agent.step} steps')
                 break
 
     # Release env

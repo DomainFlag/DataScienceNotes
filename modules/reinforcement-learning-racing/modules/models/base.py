@@ -103,7 +103,7 @@ class BaseAgent:
 
                 # Reset environment and state when not alive or finished successfully a lap
                 if env.done:
-                    progress = params["progress_total"][1] if params is not None else step
+                    progress = params["progress"] if params is not None else step
 
                     self.model_new_episode(progress, step)
                     if env.done:

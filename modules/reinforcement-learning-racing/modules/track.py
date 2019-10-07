@@ -25,6 +25,8 @@ class Track:
     WIDTH_MAX: int = 45
     WIDTH_MAX_OFFSET: int = 8
 
+    TRACK_SCREEN_OFFSET = 0.275
+
     points: list
     pivots: list
 
@@ -36,6 +38,7 @@ class Track:
     index: int = 0
     progress: int = 0
     progress_max: int = 0
+    progress_max_prev: int = 0
 
     static_params: dict = {
         "width_max": WIDTH_MAX,
@@ -50,18 +53,18 @@ class Track:
         road_tex.set_colorkey(TRANSPARENT)
 
     def initialize_track(self, size, text_renderer = None, track_save = False, track_cache = False, filename = None):
-        self.size, self.track_offset = size, (np.mean(size) * 0.1).astype(int)
+        self.size, self.track_offset = size, (np.mean(size) * Track.TRACK_SCREEN_OFFSET).astype(int)
         track_size = np.array(size) - self.track_offset * 2.0
 
         if track_cache:
             self.load_track_from_dict(filename)
         else:
             # Generate pivots
-            self.points, self.pivots = pivot_map_generate(36, *track_size)
+            self.points, self.pivots = pivot_map_generate(24, *track_size)
             self.noise_seed = np.random.randint(np.iinfo(np.int32).max)
 
             np.random.seed(seed = self.noise_seed)
-            self.noise_data = np.random.random(len(self.pivots) + 1) * 50.03
+            self.noise_data = np.random.random(len(self.pivots) + 1) * 50
 
             # Create the track and renderer, render to static surface
             xi, yi = interpolated_map_generate(np.array(self.pivots), noise = self.noise_data)
@@ -75,7 +78,7 @@ class Track:
             self.save_track_to_dict(filename = "track_model.npy" if filename is None else filename)
 
     def initialize_sprite(self, index = 0):
-        self.start_index = index
+        self.start_index, self.index = index, index
 
         # Create the sprite
         start_pos, start_rot = self.get_metadata(index = index)
@@ -141,7 +144,7 @@ class Track:
         start_pos, start_rot = self.get_metadata(index = self.start_index)
         self.sprite.position, self.sprite.rotation = start_pos, start_rot
         self.index, self.lap = self.start_index, 0
-        self.progress, self.progress_max = 0, 0
+        self.progress, self.progress_max, self.progress_max_prev = 0, 0, 0
 
     def is_to_left(self):
         """ Helper function for retrieving whenever the sprite is to the left of track from track perspective """
@@ -199,6 +202,7 @@ class Track:
 
         index = self.get_sprite_index(self.sprite.position, self.index)
 
+        self.progress_max_prev = self.progress_max
         self.progress += Track.get_index_offset(self.index, index)
         self.index = index
         self.pts, self.width, self.rot = self.get_sprite_boundaries(self.sprite.position, self.index)
@@ -212,7 +216,7 @@ class Track:
 
         self.progress_max = max(self.get_progress(), self.progress_max)
 
-    def render(self, screen, direction_offset = 200, hint_direction = True, hint_boundary = True):
+    def render(self, screen, direction_offset = 200, hint_direction = False, hint_boundary = False):
         # Render track
         screen.blit(self.track_surface, (0, 0))
 
@@ -244,6 +248,7 @@ class Track:
             "lap": self.lap,
             "progress": self.get_progress(),
             "progress_max": self.progress_max,
+            "progress_max_prev": self.progress_max_prev,
             "alive": self.is_alive(state, centered),
             "angle": self.get_metadata(self.index, offset = 5)[-1]
         })

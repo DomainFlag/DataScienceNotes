@@ -43,7 +43,7 @@ class Model(nn.Module):
         )
 
         features, conv = np.array(size[-2:]), None
-        self.pipeline = [self.sec1, self.sec2, self.sec3, self.sec4]
+        self.pipeline = [self.sec1, self.sec2, self.sec3]
         for sec in self.pipeline:
             iter = sec.modules()
 

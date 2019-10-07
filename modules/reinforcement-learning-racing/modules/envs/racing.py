@@ -9,7 +9,7 @@ from modules.envs import BaseEnv
 from modules import Track, Sprite
 
 TITLE = "RL racer"
-SIZE = [500, 500]
+SIZE = [700, 700]
 
 FPS_CAP = 60.0
 TRANSPARENT = (0, 0, 0, 0)
@@ -42,7 +42,9 @@ def create_text_renderer(screen):
     return text_render
 
 
-def create_snapshot(surface, size = None, center = None, filename: str = "screen.png", format = "PNG", save = False,
+def create_snapshot(surface, size = None, center = None, offset = None, rotation = None, filename: str = "screen.png",
+                    format = "PNG",
+                    save = False,
                     normalize = False, tensor = False, grayscale = False):
     # Get image data
     data = pygame.surfarray.pixels3d(surface)
@@ -50,7 +52,13 @@ def create_snapshot(surface, size = None, center = None, filename: str = "screen
     # Preprocess the image
     image = Image.fromarray(np.rollaxis(data, 0, 1)[::-1, :, :], mode = "RGB")
     image = image.rotate(270)
+    if center is not None and rotation is not None:
+        image = image.rotate(rotation, center = tuple(center.astype(int)))
+
     if size is not None and center is not None:
+        if offset is not None:
+            center += offset
+
         lu = np.maximum((center - size / 2).astype(int), (0, 0))
         rl = lu + size
 
@@ -87,15 +95,27 @@ def rewarder(params: dict) -> float:
     # Keep center
     width_offset = min(params["width"], params["width_half"]) / params["width_half"]
     if not width_offset > 0.4:
-        reward -= 5e-1
+        reward -= 2e-1
 
     # Keep the line direction
     offset_angle = utils.compute_min_offset(params["angle"], params["rot"], np.pi * 2)
-    if abs(offset_angle) > 0.25:
-        reward -= 5e-1
+    if abs(offset_angle) > 0.3:
+        reward -= 2e-1
 
     if reward == 0:
         reward = 1
+
+    return float(reward)
+
+
+def rewarder(params: dict) -> float:
+    if not params["alive"]:
+        return -20
+
+    reward = -1e-1
+
+    if params["progress_max_prev"] < params["progress_max"]:
+        reward += params["progress_max"] - params["progress_max_prev"]
 
     return float(reward)
 
@@ -112,7 +132,8 @@ class Racing(BaseEnv):
     track_random_reset: bool
     track_random_reset_every: int
 
-    def __init__(self, device, frame_size, agent_active = True, track_random_reset = False, track_random_reset_every = 6, frame_diff = False,
+    def __init__(self, device, frame_size, agent_active = True, track_random_reset = False,
+                 track_random_reset_every = 6, frame_diff = False,
                  frame_buffer = False, track_cache = True, track_file = None, track_save = False):
         super().__init__(device, frame_diff)
 
@@ -187,9 +208,12 @@ class Racing(BaseEnv):
             self.clock.tick(FPS_CAP)
 
         # Create an image frame
-        sprite_pos = self.track.sprite.get_position()
-        frame = create_snapshot(self.surface, size = self.frame_size, center = sprite_pos, tensor = True,
-                                grayscale = True, normalize = True)
+        rot = -(self.track.sprite.rotation / np.pi * 180)
+        center = self.track.sprite.get_position()
+        offset = np.array([self.frame_size[0] / 2 - 25, 0])
+
+        frame = create_snapshot(self.surface, size = self.frame_size, center = center, offset = offset, tensor = True,
+                                rotation = rot, grayscale = True, normalize = True)
         frame = self.edit_frame(frame)
 
         # Get current env params a reward
@@ -237,7 +261,8 @@ class Racing(BaseEnv):
     def reset(self, episode):
         super().reset(episode)
 
-        self.track.reset_track(random_reset = self.track_random_reset, hard_reset = episode % self.track_random_reset_every == 0)
+        self.track.reset_track(random_reset = self.track_random_reset,
+                               hard_reset = episode % self.track_random_reset_every == 0)
 
     def release(self):
         # Be IDLE friendly
