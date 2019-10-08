@@ -40,6 +40,8 @@ parser.add_argument('--frame-size', nargs = '*', default = [150, 150], metavar =
                     help = 'train sample frame size (default: [150, 150])')
 parser.add_argument('--frame-diff', action = 'store_true', default = False,
                     help = 'use the difference between each two subsequent frames (default: False)')
+parser.add_argument('--frame-pack', action = 'store_true', default = False,
+                    help = 'stack 4 latest frames as 4 channels (default: False)')
 parser.add_argument('--frame-buffer', action = 'store_true', default = False,
                     help = 'no window will be displayed (default: False)')
 parser.add_argument('--frame-grayscale', action = 'store_true', default = False,
@@ -58,6 +60,10 @@ parser.add_argument('--track-random-reset-every', type = int, default = 6, metav
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    args.frame_shape = (1, *args.frame_size) if args.frame_grayscale else (3, *args.frame_size)
+    channels = 1 if args.frame_grayscale else 3
+    if args.frame_pack:
+        channels *= 4
+
+    args.frame_shape = (channels, *args.frame_size)
 
     racing_game(args)

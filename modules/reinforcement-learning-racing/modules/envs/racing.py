@@ -132,12 +132,11 @@ class Racing(BaseEnv):
     track_random_reset: bool
     track_random_reset_every: int
 
-    def __init__(self, device, frame_size, agent_active = True, track_random_reset = False,
-                 track_random_reset_every = 6, frame_diff = False,
+    def __init__(self, device, frame_shape, agent_active = True, track_random_reset = False,
+                 track_random_reset_every = 6, frame_diff = False, frame_pack = False,
                  frame_buffer = False, track_cache = True, track_file = None, track_save = False):
-        super().__init__(device, frame_diff)
+        super().__init__(device, frame_shape, frame_diff, frame_pack)
 
-        self.frame_size = np.array(frame_size)
         self.agent_active, self.frame_buffer = agent_active, frame_buffer
         self.track_random_reset, self.track_random_reset_every = track_random_reset, track_random_reset_every
         self.track_cache, self.track_file, self.track_save = track_cache, track_file, track_save

@@ -28,13 +28,13 @@ def racing_game(args):
         assert args.agent_active, f'No human interaction on this environment is allowed - {args.env_name}'
 
         for t in range(processes_count):
-            envs.append(Baseline(device, args.frame_size, args.frame_diff))
+            envs.append(Baseline(device, args.frame_shape, args.frame_diff, args.frame_pack))
     elif args.env_name == 'Racing':
         for t in range(processes_count):
             envs.append(
-                Racing(device, args.frame_size, args.agent_active, args.track_random_reset,
-                       args.track_random_reset_every, args.frame_diff, args.frame_buffer, args.track_cache,
-                       args.track_cache_name, args.track_save))
+                Racing(device, args.frame_shape, args.agent_active, args.track_random_reset,
+                       args.track_random_reset_every, args.frame_diff, args.frame_pack, args.frame_buffer,
+                       args.track_cache, args.track_cache_name, args.track_save))
 
     assert len(envs) > 0, 'Env model is invalid'
 
@@ -69,4 +69,3 @@ def racing_game(args):
             agent_model.model_valid(envs[0], args.episode_count)
     else:
         envs[0].run()
-

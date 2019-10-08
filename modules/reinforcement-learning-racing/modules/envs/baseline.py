@@ -17,10 +17,8 @@ class Baseline(BaseEnv):
     # Environment
     env = None
 
-    def __init__(self, device, frame_size, frame_diff):
-        super().__init__(device, frame_diff)
-
-        self.frame_size = frame_size
+    def __init__(self, device, frame_shape, frame_diff, frame_pack):
+        super().__init__(device, frame_shape, frame_diff, frame_pack)
 
     def init(self):
         self.env = gym.make('CartPole-v0').unwrapped

@@ -17,7 +17,7 @@ class Model(nn.Module):
     size: tuple
     actions_count: int
 
-    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 1024, num_layers: int = 1):
+    def __init__(self, size: tuple, actions_count: int, recurrent = False, hidden_size: int = 1024, num_layers: int = 2):
         super(Model, self).__init__()
 
         self.size, self.actions_count = size, actions_count
