@@ -10,7 +10,7 @@ class Sprite:
     SPRITE_SIZE: np.ndarray = np.array([25, 25])
 
     MAX_VELOCITY: float = 2.15
-    MIN_VELOCITY: float = 0.4
+    MIN_VELOCITY: float = 1.4
 
     ACTION_SPACE_COUNT = 2
     MOTION_SPACE_COUNT = 2

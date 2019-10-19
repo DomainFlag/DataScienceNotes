@@ -11,6 +11,10 @@ from heapq import merge
 from modules.models import BaseAgent
 from torch.optim.adam import Adam
 
+from collections import namedtuple
+
+Sample = namedtuple('Sample', ('states', 'lives', 'prob_log', 'actions', 'rewards'))
+
 
 class Model(nn.Module):
 
@@ -84,21 +88,17 @@ class Model(nn.Module):
         for sec in self.pipeline:
             x = sec.forward(x)
 
+        # BSxCxHxW => BxSxI
         if self.recurrent:
-            # BSxCxHxW => BxSxI
             x, hidden_state = self.rnn(x.view(batch_size, seq_size, -1), hidden_state)
-
-            # BxSxI => BxI | [-1]
-            x = x[:, -1, :]
         else:
-            # BSxCxHxW => BxI | S = 1
-            x = x.view(batch_size, -1)
+            x = x.view(batch_size, seq_size, -1)
 
-        # Policy dictates the action to be taken
-        policy = F.softmax(self.actor(x), dim = 1)
+        # Policy dictates the action to be taken | BxSxP
+        policy = F.softmax(self.actor(x), dim = 2)
 
-        # BxI => Bx1 => B
-        value = self.critic(x).squeeze(1)
+        # BxSxI => BxSx1 => BxS
+        value = self.critic(x).squeeze(2)
 
         return policy, value, hidden_state
 
@@ -118,7 +118,7 @@ class PPO(BaseAgent):
     VALUE_COEF = 0.5
     CLIP_ALPHA = 0.2
     EPOCHS_COUNT = 6
-    T_STEP = 600
+    T_STEP = 750
     STEP_MAX = 2250
 
     states: list = []
@@ -134,7 +134,8 @@ class PPO(BaseAgent):
     recurrent: bool
     asynchronous: bool
 
-    def __init__(self, device, size, action_count, agent_cache = False, agent_cache_name = 'model.pt', recurrent = False,
+    def __init__(self, device, size, action_count, agent_cache = False, agent_cache_name = 'model.pt',
+                 recurrent = False,
                  num_processes = 4):
         super().__init__(device, size, action_count, agent_cache, agent_cache_name)
 
@@ -150,24 +151,30 @@ class PPO(BaseAgent):
         if self.agent_cache:
             self.load_network_from_dict(self.agent_cache_name, False)
 
-    def choose_action(self, state, model = None, training = False):
-        if model is None:
-            model = self.policy
+    def choose_action(self, state, model = None, training = False, batch_seq_ready = False):
+        assert (model is not None), 'A model must be picked for inference'
+
+        if not batch_seq_ready:
+            state = state.unsqueeze(0).unsqueeze(0)
 
         if not training:
             with torch.no_grad():
-                policy, value, self.hidden_state = model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
+                policy, value, self.hidden_state = model(state, self.hidden_state)
         else:
-            policy, value, self.hidden_state = model(state.unsqueeze(0).unsqueeze(0), self.hidden_state)
+            policy, value, self.hidden_state = model(state, self.hidden_state)
 
-        action = policy.multinomial(1).data[0, 0]
+        if not batch_seq_ready:
+            actions = policy.multinomial(1).data[0, 0]
+        else:
+            # BxSxP => BxSx1 | 1 action => BxS
+            actions = policy.multinomial(1).squeeze()
 
-        return action, (policy, value)
+        return actions, (policy, value)
 
     def eval(self):
         self.policy.eval()
 
-    def model_optimize(self, prev_state, action, state, reward, done = False, residuals = None, locker = None):
+    def model_optimize(self, prev_state, action, state, reward, done = False, residuals = None, queue = None, cond = None):
 
         # Unpacking residuals variables
         policy, value = residuals
@@ -175,7 +182,7 @@ class PPO(BaseAgent):
         if done:
             reward = torch.tensor(0).to(self.device)
 
-        self.probs_log.append(torch.log(policy[0][action]))
+        self.probs_log.append(torch.log(policy[0][0][action]))
         self.states.append(prev_state)
         self.actions.append(action)
         self.lives.append(done)
@@ -187,9 +194,6 @@ class PPO(BaseAgent):
 
         if self.episode_step % PPO.episode_step_every == 0:
             print(f"\tStep: {self.episode_step}\tReward: {self.reward_acc}")
-
-        # Lock processes
-        locker.acquire()
 
         if self.step % PPO.T_STEP == 0:
             # Discounted rewards
@@ -205,73 +209,20 @@ class PPO(BaseAgent):
             # Rewards normalization
             rewards = (rewards - rewards.mean()) / rewards.std()
 
-            # Entropy strength
-            entropy_strength = (PPO.ENT_END + (PPO.ENT_START - PPO.ENT_END) * np.exp(-1. * self.episode / PPO.ENT_DECAY))
+            # Training sample
+            sample = Sample(
+                torch.stack(self.states),
+                self.lives,
+                torch.stack(self.probs_log),
+                torch.stack(self.actions),
+                rewards
+            )
 
-            # Optimize policy for K epochs:
-            for _ in range(PPO.EPOCHS_COUNT):
+            queue.put(sample, block = True)
 
-                # Reset hidden state
-                if self.recurrent:
-                    if self.prev_hidden_state is not None:
-                        self.hidden_state = self.prev_hidden_state.clone()
-                    else:
-                        self.hidden_state = None
-
-                # Acc policy
-                policy_values = []
-                policy_probs_log = []
-                entropy = []
-
-                for index, (state, done) in enumerate(zip(self.states, self.lives)):
-                    # Run the action
-                    _, (policy, value) = self.choose_action(state, model = self.policy, training = True)
-                    policy_prob_log = torch.log(policy[0])
-
-                    policy_probs_log.append(policy_prob_log[self.actions[index]])
-                    policy_values.append(value[0])
-
-                    # Accumulate entropy
-                    entropy.append(-torch.sum(policy[0] * policy_prob_log).to(self.device))
-
-                    # Reset if terminal
-                    if self.recurrent and done:
-                        self.hidden_state = None
-
-                # Compute Entropy
-                entropy = torch.stack(entropy).mean() * entropy_strength
-
-                # Advantage: how good the actions were
-                advantages = rewards - torch.stack(policy_values)
-
-                # MSE error
-                value_loss = PPO.VALUE_COEF * advantages.pow(2).mean()
-
-                # Compute the surrogate objective loss
-                ratio = torch.exp(torch.stack(policy_probs_log) - torch.stack(self.probs_log))
-                objective_loss = ratio * advantages
-                objective_loss_clipped = torch.clamp(ratio, 1 - PPO.CLIP_ALPHA, 1 + PPO.CLIP_ALPHA) * advantages
-
-                # Compute loss
-                policy_loss = torch.min(objective_loss, objective_loss_clipped).mean()
-
-                # Gradient ascent on policy, entropy - reward and exploration | descent on value - critic penalty
-                loss = value_loss - policy_loss - entropy
-
-                # Discard accumulated gradients
-                self.optimizer.zero_grad()
-
-                # Compute gradients
-                loss.backward()
-
-                # Normalize gradients
-                nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
-
-                # Adjust weights
-                self.optimizer.step()
-
-            # Update target with new policy states
-            self.target.load_state_dict(self.policy.state_dict())
+            with cond:
+                # Wait the target model to be updated with the policy
+                cond.wait()
 
             self.states, self.lives, self.actions = [], [], []
             self.probs_log, self.rewards = [], []
@@ -283,13 +234,78 @@ class PPO(BaseAgent):
 
                 self.prev_hidden_state = self.hidden_state
 
-        # Continue other processes
-        locker.release()
+            return 2
 
         if self.episode_step == PPO.STEP_MAX:
-            return True
+            return 1
 
-        return False
+        return 0
+
+    def model_optimize_(self, batch_samples):
+
+        # Unpacking the batch samples
+        batch_prob_log = torch.stack(batch_samples.prob_log).to(self.device)
+        batch_states = torch.stack(batch_samples.states).to(self.device)
+        batch_actions = torch.stack(batch_samples.actions).to(self.device)
+        batch_rewards = torch.stack(batch_samples.rewards).to(self.device)
+
+        # Update episode
+        self.episode += 1
+
+        # Entropy strength
+        entropy_strength = (PPO.ENT_END + (PPO.ENT_START - PPO.ENT_END) * np.exp(-1. * self.episode / PPO.ENT_DECAY))
+
+        # Optimize policy for K epochs:
+        for _ in range(PPO.EPOCHS_COUNT):
+
+            # Reset hidden state
+            if self.recurrent:
+                if self.prev_hidden_state is not None:
+                    self.hidden_state = self.prev_hidden_state.clone()
+                else:
+                    self.hidden_state = None
+
+            # B x S x P policy estimations and B x S values
+            _, (policies, values) = self.choose_action(batch_states, model = self.policy, training = True, batch_seq_ready = True)
+            policy_probs_log = torch.log(policies)
+
+            # B x S x P | Action Indices (B x S => B x S x 1) => B x S of action prob
+            policy_prob_log = policy_probs_log.gather(dim = 2, index = batch_actions.unsqueeze(2)).squeeze(-1)
+
+            # Compute Entropy | B x S x P => B x S => B
+            entropy = -torch.sum(policies * policy_probs_log, dim = 2).mean(dim = 1).to(self.device) * entropy_strength
+
+            # Advantage: how good the actions were
+            advantages = batch_rewards - values
+
+            # Batch MSE error
+            value_loss = PPO.VALUE_COEF * advantages.pow(2).mean(dim = 1)
+
+            # Compute the surrogate objective loss
+            ratio = torch.exp(policy_prob_log - batch_prob_log)
+            objective_loss = ratio * advantages
+            objective_loss_clipped = torch.clamp(ratio, 1 - PPO.CLIP_ALPHA, 1 + PPO.CLIP_ALPHA) * advantages
+
+            # Compute batch policy loss
+            policy_loss = torch.min(objective_loss, objective_loss_clipped).mean(dim = 1)
+
+            # Gradient ascent on policy, entropy - reward and exploration | descent on value - critic penalty
+            loss = (value_loss - policy_loss - entropy).mean()
+
+            # Discard accumulated gradients
+            self.optimizer.zero_grad()
+
+            # Compute gradients
+            loss.backward()
+
+            # Normalize gradients
+            nn.utils.clip_grad_norm_(self.policy.parameters(), 1.0)
+
+            # Adjust weights
+            self.optimizer.step()
+
+        # Update target with new policy states
+        self.target.load_state_dict(self.policy.state_dict())
 
     def model_new_episode(self, progress, step_count):
         self.progress.append((time.time(), progress, self.reward_acc))
@@ -326,7 +342,6 @@ class PPO(BaseAgent):
         mp.set_start_method('spawn', force = True)
 
         # Share the agent model memory
-        self.policy.share_memory()
         self.target.share_memory()
 
         # Perform agent on environment
@@ -334,17 +349,35 @@ class PPO(BaseAgent):
 
         # Initialize a lock for progress synchronization
         locker = mp.Manager().Lock()
+        queue = mp.Manager().Queue()
+        cond = mp.Manager().Condition(locker)
 
         # Act agent on environment
         for env in envs:
-            results.append(processes.apply_async(target, (env, self, episode_count, locker)))
+            results.append(processes.apply_async(target, (env, self, episode_count, queue, cond)))
 
         processes.close()
+
+        for _ in range(episode_count):
+            samples = []
+            for i in range(len(envs)):
+                # Wait until all training samples are available
+                samples.append(queue.get(block = True))
+
+            # Stop training when max episodes is reached once
+            batch_samples = Sample(*zip(*samples))
+
+            # Model batch optimization
+            self.model_optimize_(batch_samples)
+
+            with cond:
+                # Notify all working processes
+                cond.notify_all()
 
         # Sync workers with the main process
         processes.join()
 
-        # Agent progress
+        # Agent progress; unpacking only progress and reward
         progress = merge(*[res.get() for res in results])
         self.progress_history, self.reward_history = list(zip(*progress))[1:]
 
@@ -357,9 +390,12 @@ class PPO(BaseAgent):
 
 
 # Training function
-def target(env, agent, episode_count, locker):
+def target(env, agent, episode_count, queue, cond):
     # Initialize env
     env.init()
+
+    # Training episodes counter
+    episodes = 0
 
     while not env.exit:
 
@@ -376,26 +412,27 @@ def target(env, agent, episode_count, locker):
                 state = None
 
             flag = agent.model_optimize(env.prev_state, action, state, reward, done = not params['alive'],
-                                        residuals = residuals, locker = locker)
+                                        residuals = residuals, queue = queue, cond = cond)
 
-            if flag or not params['alive']:
+            if flag > 0 or not params['alive']:
                 env.done = True
 
-            # Reset environment and state when not alive or finished successfully a lap
+            if flag == 2:
+                episodes += 1
+
+                # Maximum episodes
+                env.exit = episodes == episode_count or env.exit
+
+            # Reset environment and state when not alive
             if env.done:
                 progress = params["progress"] if "progress" in params else step
-
                 agent.model_new_episode(progress, step)
-                if env.done:
-                    # Checking in case of explicit exit
-                    env.exit = agent.episode >= episode_count or env.exit
 
                 env.reset(agent.episode)
                 break
 
             # Exit time
             if env.exit:
-                print(f'Training complete: {agent.step} steps')
                 break
 
     # Release env
