@@ -6,10 +6,9 @@ from collections import deque
 
 
 def log_sum_exp_stable(values, dim):
-    min_values, max_values = torch.min(values, dim = dim).values, torch.max(values, dim = dim).values
-    alpha = (min_values + max_values) / 2
+    alpha_values = torch.max(values, dim = dim).values
 
-    return alpha + torch.log(torch.exp(values.T - alpha).sum(dim = 0).clamp(min = 1e-8))
+    return alpha_values + torch.log(torch.exp(values.T - alpha_values).sum(dim = 0).clamp(min = 1e-8))
 
 
 class CRF:

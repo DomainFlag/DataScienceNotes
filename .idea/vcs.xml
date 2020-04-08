@@ -3,6 +3,7 @@
   <component name="VcsDirectoryMappings">
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/flower_classifier" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/modules/flower-classifier" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/modules/flower_classifier" vcs="Git" />
   </component>
 </project>
